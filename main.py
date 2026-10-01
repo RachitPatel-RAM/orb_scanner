@@ -83,7 +83,7 @@ class LiveEngine:
         if settings.strategy.signal_timeframe == 5:
             signal = self.strategy.on_candle_closed(candle)
             if signal:
-                self._handle_signal(signal)
+                self._handle_signal(signal, candle)
 
     def _on_15m_candle_closed(self, candle: Candle) -> None:
         """Triggered whenever a 15-minute candle finalizes (e.g. 09:30, 09:45, 10:00)."""
@@ -98,10 +98,29 @@ class LiveEngine:
         if settings.strategy.signal_timeframe == 15:
             signal = self.strategy.on_candle_closed(candle)
             if signal:
-                self._handle_signal(signal)
+                self._handle_signal(signal, candle)
 
-    def _handle_signal(self, sig: Signal) -> None:
-        """Processes a new ORB breakout signal."""
+    def _handle_signal(self, sig: Signal, candle: Optional[Candle] = None) -> None:
+        """Processes a new ORB breakout signal with ML conviction verification."""
+        # AI learned conviction & false-breakout trap check:
+        if candle:
+            try:
+                from app.strategies.ml_learner import ml_learner
+                ai_eval = ml_learner.calculate_conviction_score(
+                    candle=candle,
+                    direction=sig.direction,
+                    orb_high=sig.orb_high,
+                    orb_low=sig.orb_low,
+                )
+                if ai_eval.score < 40:
+                    logger.warning(
+                        f"AI Prediction Filter: Blocked {sig.symbol} {sig.direction.value} breakout "
+                        f"(Conviction: {ai_eval.score}%, Reasons: {ai_eval.reasons}). Trade filtered."
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"Error evaluating ML conviction for signal {sig.symbol}: {e}")
+
         # Save signal in SQLite (idempotency key prevents duplicate insertions)
         sig_id = db.save_signal(
             trade_date=sig.trade_date.isoformat(),
@@ -126,8 +145,8 @@ class LiveEngine:
         # Open virtual position in paper tracker
         self.paper_tracker.open_trade_from_signal(sig)
 
-        # Dispatch Telegram alert (fail-safe async task)
-        asyncio.create_task(notifier.send_signal(sig))
+        # Dispatch Telegram alert (fail-safe async task with candle context)
+        asyncio.create_task(notifier.send_signal(sig, candle=candle))
 
     def _on_target_hit(self, trade: PaperTrade) -> None:
         """Callback when virtual position reaches its target."""

@@ -154,6 +154,7 @@ class HistoricalLearner:
         overall_wr = (breakout_wins / breakout_days * 100.0) if breakout_days > 0 else 0.0
         high_vol_wr = (high_vol_wins / high_vol_breakouts * 100.0) if high_vol_breakouts > 0 else 0.0
         low_vol_wr = (low_vol_wins / low_vol_breakouts * 100.0) if low_vol_breakouts > 0 else 0.0
+        trap_rate = (false_breakout_rejections / breakout_days * 100.0) if breakout_days > 0 else 0.0
 
         return {
             "symbol": symbol,
@@ -162,6 +163,7 @@ class HistoricalLearner:
             "win_rate": round(overall_wr, 1),
             "high_vol_win_rate": round(high_vol_wr, 1),
             "low_vol_win_rate": round(low_vol_wr, 1),
+            "trap_rate": round(trap_rate, 1),
             "false_breakout_rejections": false_breakout_rejections,
         }
 
@@ -182,6 +184,9 @@ class HistoricalLearner:
                 "M&M", "MARUTI", "KOTAKBANK", "JSWSTEEL", "HINDALCO"
             ][:max_symbols]
 
+        if not instrument_manager.sec_id_to_symbol:
+            instrument_manager.load_and_parse()
+
         results = []
         total_bars_examined = 0
 
@@ -195,6 +200,16 @@ class HistoricalLearner:
                 eval_res = self.evaluate_multi_year_bars(sym, bars)
                 if eval_res and eval_res.get("breakout_samples", 0) > 10:
                     results.append(eval_res)
+                    # Persist stock model with recency decay: 30% new, 70% historical prior
+                    db.save_stock_learned_model(
+                        symbol=sym,
+                        security_id=sec_id,
+                        win_rate=eval_res["win_rate"],
+                        high_vol_win_rate=eval_res["high_vol_win_rate"],
+                        trap_rate=eval_res["trap_rate"],
+                        sessions_analyzed=eval_res["sessions_analyzed"],
+                        optimal_vol_ratio=1.3,
+                    )
             # Gentle rate limiting
             await asyncio.sleep(0.2)
 

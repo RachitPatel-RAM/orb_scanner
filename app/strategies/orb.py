@@ -278,6 +278,15 @@ class ORBStrategy:
             if candle.volume < (avg_vol * filters.volume.multiplier):
                 return False
 
+        # Learned Stock Model Intelligence: Filter persistent false breakout traps
+        try:
+            learned = db.get_stock_learned_model(candle.symbol)
+            if learned and learned.get("trap_rate", 0) > 35.0:
+                logger.info(f"[AI Filter] Skipping {candle.symbol}: learned trap rate {learned['trap_rate']}% exceeds 35% threshold.")
+                return False
+        except Exception:
+            pass
+
         return True
 
     def on_candle_closed(

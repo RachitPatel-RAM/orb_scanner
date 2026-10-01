@@ -71,6 +71,20 @@ class Database:
             );
             """)
 
+            # Learned stock predictive models with recency weighting and trap tracking
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stock_learned_models (
+                symbol TEXT PRIMARY KEY,
+                security_id TEXT,
+                win_rate REAL NOT NULL,
+                high_vol_win_rate REAL NOT NULL,
+                trap_rate REAL NOT NULL,
+                sessions_analyzed INTEGER NOT NULL,
+                optimal_vol_ratio REAL DEFAULT 1.3,
+                last_trained_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+
             # 1-minute Candles
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS candles_1m (
@@ -482,7 +496,47 @@ class Database:
                     return json.loads(row["value"])
                 except Exception:
                     pass
-        return None
+    def save_stock_learned_model(
+        self,
+        symbol: str,
+        security_id: str,
+        win_rate: float,
+        high_vol_win_rate: float,
+        trap_rate: float,
+        sessions_analyzed: int,
+        optimal_vol_ratio: float = 1.3,
+    ) -> None:
+        """
+        Saves or updates stock predictive model with recency decay:
+        blends 30% new observation with 70% historical memory ('navu shikhtu re, junu bhultu re').
+        """
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO stock_learned_models (
+                    symbol, security_id, win_rate, high_vol_win_rate, trap_rate,
+                    sessions_analyzed, optimal_vol_ratio, last_trained_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    security_id = excluded.security_id,
+                    win_rate = round(stock_learned_models.win_rate * 0.70 + excluded.win_rate * 0.30, 1),
+                    high_vol_win_rate = round(stock_learned_models.high_vol_win_rate * 0.70 + excluded.high_vol_win_rate * 0.30, 1),
+                    trap_rate = round(stock_learned_models.trap_rate * 0.70 + excluded.trap_rate * 0.30, 1),
+                    sessions_analyzed = excluded.sessions_analyzed,
+                    optimal_vol_ratio = excluded.optimal_vol_ratio,
+                    last_trained_at = CURRENT_TIMESTAMP
+            """, (symbol, str(security_id), win_rate, high_vol_win_rate, trap_rate, sessions_analyzed, optimal_vol_ratio))
+
+    def get_stock_learned_model(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Retrieves learned predictive parameters for a specific stock."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM stock_learned_models WHERE symbol = ?", (symbol,)).fetchone()
+            return dict(row) if row else None
+
+    def get_all_stock_learned_models(self) -> List[Dict[str, Any]]:
+        """Returns all stock learned models ranked by predictive win rate."""
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT * FROM stock_learned_models ORDER BY high_vol_win_rate DESC").fetchall()
+            return [dict(r) for r in rows]
 
 
 db = Database()

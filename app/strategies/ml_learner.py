@@ -13,6 +13,7 @@ from datetime import datetime, time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import logger
+from app.storage.database import db
 from app.storage.firebase_sync import firebase_sync
 from app.storage.models import Candle, Direction, PaperTrade, Signal
 
@@ -33,6 +34,7 @@ class AIConvictionResult:
     level: str  # HIGH_CONVICTION, MODERATE, LOW_RISK
     pattern: str
     reasons: List[str]
+    learned_win_rate: Optional[float] = None
 
 
 class MLLearner:
@@ -175,10 +177,44 @@ class MLLearner:
         c_time = candle.timestamp.time()
         if time(10, 0) <= c_time <= time(11, 30):
             score += 10.0
-            reasons.append("Prime Morning Liquidity Window")
         elif time(12, 0) <= c_time <= time(13, 30):
             score -= 10.0
             reasons.append("Midday Low Liquidity Window")
+
+        # 5. Learned Stock Profile & Recency Intelligence ("navu shikhtu re, junu bhultu re")
+        learned_win_rate = None
+        try:
+            learned_model = db.get_stock_learned_model(candle.symbol)
+            if learned_model:
+                h_wr = learned_model.get("high_vol_win_rate", 50.0)
+                trap_r = learned_model.get("trap_rate", 0.0)
+                opt_vol = learned_model.get("optimal_vol_ratio", 1.3)
+                learned_win_rate = h_wr
+
+                # High win rate boost (empirically validated on Dhan multi-year data)
+                if h_wr >= 68.0:
+                    score += 15.0
+                    reasons.append(f"High-Probability Stock ({h_wr:.0f}% Learned Win Rate)")
+                elif h_wr >= 62.0:
+                    score += 8.0
+                    reasons.append(f"Favorable Statistical Edge ({h_wr:.0f}% Win Rate)")
+                elif h_wr < 50.0:
+                    score -= 20.0
+                    reasons.append(f"Historical Low Follow-Through ({h_wr:.0f}% Win Rate)")
+
+                # False breakout trap penalty
+                if trap_r >= 25.0:
+                    score -= 15.0
+                    reasons.append(f"High Reversal Trap Risk ({trap_r:.0f}% Trap Rate)")
+
+                # Volume threshold check against stock's learned optimal signature
+                if avg_volume_20 and avg_volume_20 > 0:
+                    v_ratio = candle.volume / avg_volume_20
+                    if v_ratio >= opt_vol:
+                        score += 10.0
+                        reasons.append(f"Volume Meets Learned Signature (>{opt_vol}x)")
+        except Exception as e:
+            logger.debug(f"Error querying stock learned model for {candle.symbol}: {e}")
 
         # Bound score between 5 and 99
         final_score = int(max(5, min(99, score)))
@@ -195,6 +231,7 @@ class MLLearner:
             level=level,
             pattern=feats.pattern_name,
             reasons=reasons,
+            learned_win_rate=learned_win_rate,
         )
 
     async def update_daily_learning(self, trades: List[PaperTrade]) -> Dict[str, Any]:

@@ -219,7 +219,8 @@ class TelegramNotifier:
         header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
         time_str = signal.timestamp.strftime("%H:%M")
 
-        # 1. Morphological Candlestick Conviction
+        # 1. Morphological Candlestick & Learned Memory Conviction
+        learned_wr_str = ""
         if candle:
             ai_eval = ml_learner.calculate_conviction_score(
                 candle=candle,
@@ -228,6 +229,8 @@ class TelegramNotifier:
                 orb_low=signal.orb_low,
             )
             ai_score = ai_eval.score
+            if ai_eval.learned_win_rate:
+                learned_wr_str = f" ({ai_eval.learned_win_rate:.0f}% Historical Win Rate)"
         else:
             ai_score = 78
 
@@ -251,7 +254,7 @@ class TelegramNotifier:
             f"{header}\n\n"
             f"<b>Stock:</b> {signal.symbol}\n"
             f"<b>Time:</b> {time_str} IST\n\n"
-            f"<b>Conviction:</b> {ai_score}% {stars}\n"
+            f"<b>Conviction:</b> {ai_score}% {stars}{learned_wr_str}\n"
             f"\"{clean_reason}\"\n\n"
             f"<b>Entry:</b> ₹{signal.entry_price:,.2f}\n"
             f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n"
