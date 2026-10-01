@@ -70,30 +70,34 @@ def test_orb_high_low_calculation(base_config):
 
     # 09:15 candle (ignored because orb_start is 09:30)
     c0 = make_candle("100", "RELIANCE", "2026-10-01T09:15:00", 2400, 2600, 2300, 2450)
-    # Benchmark candle: 09:30-09:45
-    c1 = make_candle("100", "RELIANCE", "2026-10-01T09:30:00", 2500, 2530, 2490, 2520)
+    # 2 x 15m benchmark candles: 09:30-09:45 and 09:45-10:00
+    c1 = make_candle("100", "RELIANCE", "2026-10-01T09:30:00", 2500, 2530, 2500, 2520)
+    c2 = make_candle("100", "RELIANCE", "2026-10-01T09:45:00", 2520, 2525, 2490, 2515)
 
     strategy.register_orb_candle(c0)
     strategy.register_orb_candle(c1)
+    strategy.register_orb_candle(c2)
 
     orb = strategy.finalize_orb_levels(d, "100", "RELIANCE")
     assert orb is not None
-    assert orb.high == 2530.0  # High of 09:30-09:45
-    assert orb.low == 2490.0   # Low of 09:30-09:45
+    assert orb.high == 2530.0  # Max high across 09:30 and 09:45
+    assert orb.low == 2490.0   # Min low across 09:30 and 09:45
     assert orb.mid == 2510.0   # (2530 + 2490) / 2
 
 
-def test_no_breakout_before_0945(base_config):
+def test_no_breakout_before_1000(base_config):
     strategy = ORBStrategy(config=base_config)
     d = date(2026, 10, 1)
     strategy.reset_day(d)
 
     c1 = make_candle("100", "RELIANCE", "2026-10-01T09:15:00", 2500, 2520, 2490, 2510)
     c2 = make_candle("100", "RELIANCE", "2026-10-01T09:30:00", 2510, 2550, 2505, 2545)
+    c3 = make_candle("100", "RELIANCE", "2026-10-01T09:45:00", 2545, 2560, 2540, 2555)
 
-    # Candles starting before 09:45 must NEVER return a breakout signal
+    # Candles starting before 10:00 must NEVER return a breakout signal
     assert strategy.on_candle_closed(c1) is None
     assert strategy.on_candle_closed(c2) is None
+    assert strategy.on_candle_closed(c3) is None
 
 
 def test_long_breakout_confirmation_and_levels(base_config):

@@ -94,7 +94,7 @@ class SessionConfig(BaseModel):
     timezone: str = "Asia/Kolkata"
     market_open: str = "09:15"
     orb_start: str = "09:30"
-    orb_end: str = "09:45"
+    orb_end: str = "10:00"
     entry_end: str = "15:25"
     market_close: str = "15:30"
 

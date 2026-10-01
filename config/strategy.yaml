@@ -5,7 +5,7 @@ session:
   timezone: Asia/Kolkata
   market_open: "09:15"
   orb_start: "09:30"
-  orb_end: "09:45"
+  orb_end: "10:00"
   entry_end: "15:25"
   market_close: "15:30"
 

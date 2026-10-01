@@ -28,24 +28,24 @@ def test_orb_period_boundaries():
     t_start = datetime.combine(d, time(9, 30, 0), tzinfo=IST_TZ)
     assert default_session.is_orb_period(t_start) is True
 
-    # 09:44:59 -> True (inside 09:30 candle)
-    t_inside = datetime.combine(d, time(9, 44, 59), tzinfo=IST_TZ)
+    # 09:59:59 -> True (inside 09:45 candle)
+    t_inside = datetime.combine(d, time(9, 59, 59), tzinfo=IST_TZ)
     assert default_session.is_orb_period(t_inside) is True
 
-    # 09:45:00 -> False (range ended, entries start)
-    t_end = datetime.combine(d, time(9, 45, 0), tzinfo=IST_TZ)
+    # 10:00:00 -> False (range ended, entries start)
+    t_end = datetime.combine(d, time(10, 0, 0), tzinfo=IST_TZ)
     assert default_session.is_orb_period(t_end) is False
 
 
 def test_entry_window_boundaries():
     d = date(2026, 10, 1)
 
-    # 09:44:59 -> Not allowed yet (range still forming)
-    t_before = datetime.combine(d, time(9, 44, 59), tzinfo=IST_TZ)
+    # 09:59:59 -> Not allowed yet (range still forming)
+    t_before = datetime.combine(d, time(9, 59, 59), tzinfo=IST_TZ)
     assert default_session.is_entry_allowed(t_before) is False
 
-    # 09:45:00 -> Allowed (breakout window starts)
-    t_start = datetime.combine(d, time(9, 45, 0), tzinfo=IST_TZ)
+    # 10:00:00 -> Allowed (breakout window starts)
+    t_start = datetime.combine(d, time(10, 0, 0), tzinfo=IST_TZ)
     assert default_session.is_entry_allowed(t_start) is True
 
     # 15:25:00 -> Allowed (last entry second)
