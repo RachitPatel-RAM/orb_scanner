@@ -36,7 +36,7 @@ class LiveMarketFeed:
     def __init__(
         self,
         on_tick: Optional[Callable[[TickData], None]] = None,
-        stale_threshold_seconds: int = 45,
+        stale_threshold_seconds: int = 65,
     ):
         self.on_tick = on_tick
         self.stale_threshold_seconds = stale_threshold_seconds
@@ -221,7 +221,8 @@ class LiveMarketFeed:
                 break
 
             now = default_session.now()
-            if default_session.is_market_open(now):
+            # Only monitor during active trading entry hours (09:15 to 15:25 IST)
+            if default_session.is_market_open(now) and now.time() < default_session.entry_end_time:
                 if self._last_tick_time:
                     stale_dur = (now - self._last_tick_time).total_seconds()
                     if stale_dur > self.stale_threshold_seconds:
