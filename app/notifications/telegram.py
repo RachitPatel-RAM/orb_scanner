@@ -211,6 +211,7 @@ class TelegramNotifier:
         from app.trading.order_executor import order_executor
         from app.strategies.ml_learner import ml_learner
         from app.strategies.gemini_analyzer import gemini_analyzer
+        from app.strategies.groq_analyzer import groq_analyzer
 
         reply_markup, lot_size, total_lot_price = order_executor.register_signal_for_approval(signal)
 
@@ -236,9 +237,16 @@ class TelegramNotifier:
 
         stars = "⭐⭐⭐" if ai_score >= 70 else ("⭐⭐" if ai_score >= 50 else "⚠️")
 
-        # 2. Gemini AI Deep Learning Reasoning
-        gemini_res = await gemini_analyzer.analyze_breakout(signal, candle)
-        gemini_reason = gemini_res.get("reasoning", "Confirmed by volume.")
+        # 2. Dual AI Ensemble: Groq (ultra-fast <250ms) + Gemini Deep Reasoning
+        groq_task = groq_analyzer.analyze_breakout_fast(signal, candle)
+        gemini_task = gemini_analyzer.analyze_breakout(signal, candle)
+        groq_res, gemini_res = await asyncio.gather(groq_task, gemini_task, return_exceptions=True)
+
+        ai_reason = "Strong institutional follow-through confirmed."
+        if isinstance(gemini_res, dict) and gemini_res.get("reasoning"):
+            ai_reason = gemini_res["reasoning"]
+        elif isinstance(groq_res, dict) and groq_res.get("reasoning"):
+            ai_reason = groq_res["reasoning"]
 
         text = (
             f"{header}\n\n"
@@ -247,7 +255,7 @@ class TelegramNotifier:
             f"<b>Time:</b> {time_str} IST\n\n"
             f"🧠 <b>AI Conviction:</b> <b>{ai_score}% {stars}</b> ({ai_level.replace('_', ' ')})\n"
             f"🕯️ <b>Candle Pattern:</b> {ai_pattern}\n"
-            f"🤖 <b>Gemini AI:</b> <i>\"{gemini_reason}\"</i>\n\n"
+            f"⚡ <b>AI Analysis (Groq + Gemini):</b> <i>\"{ai_reason}\"</i>\n\n"
             f"<b>Entry:</b> ₹{signal.entry_price:,.2f}\n"
             f"<b>ORB High:</b> ₹{signal.orb_high:,.2f}\n"
             f"<b>ORB Low:</b> ₹{signal.orb_low:,.2f}\n"
