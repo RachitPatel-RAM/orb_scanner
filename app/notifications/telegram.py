@@ -210,6 +210,7 @@ class TelegramNotifier:
         """Dispatches rich breakout alert with AI Conviction score and 1-click execution button."""
         from app.trading.order_executor import order_executor
         from app.strategies.ml_learner import ml_learner
+        from app.strategies.gemini_analyzer import gemini_analyzer
 
         reply_markup, lot_size, total_lot_price = order_executor.register_signal_for_approval(signal)
 
@@ -217,7 +218,7 @@ class TelegramNotifier:
         header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
         time_str = signal.timestamp.strftime("%H:%M")
 
-        # AI Candlestick Quality Score
+        # 1. Morphological Candlestick Conviction
         if candle:
             ai_eval = ml_learner.calculate_conviction_score(
                 candle=candle,
@@ -235,13 +236,18 @@ class TelegramNotifier:
 
         stars = "⭐⭐⭐" if ai_score >= 70 else ("⭐⭐" if ai_score >= 50 else "⚠️")
 
+        # 2. Gemini AI Deep Learning Reasoning
+        gemini_res = await gemini_analyzer.analyze_breakout(signal, candle)
+        gemini_reason = gemini_res.get("reasoning", "Confirmed by volume.")
+
         text = (
             f"{header}\n\n"
             f"<b>Stock:</b> {signal.symbol}\n"
             f"<b>Exchange:</b> NSE\n"
             f"<b>Time:</b> {time_str} IST\n\n"
             f"🧠 <b>AI Conviction:</b> <b>{ai_score}% {stars}</b> ({ai_level.replace('_', ' ')})\n"
-            f"🕯️ <b>Candle Pattern:</b> {ai_pattern}\n\n"
+            f"🕯️ <b>Candle Pattern:</b> {ai_pattern}\n"
+            f"🤖 <b>Gemini AI:</b> <i>\"{gemini_reason}\"</i>\n\n"
             f"<b>Entry:</b> ₹{signal.entry_price:,.2f}\n"
             f"<b>ORB High:</b> ₹{signal.orb_high:,.2f}\n"
             f"<b>ORB Low:</b> ₹{signal.orb_low:,.2f}\n"

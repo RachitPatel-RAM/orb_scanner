@@ -198,6 +198,7 @@ class AppSettings:
         self.firebase_project_id: str = os.getenv("FIREBASE_PROJECT_ID", "orbscanner-cb055").strip()
         self.firebase_api_key: str = os.getenv("FIREBASE_API_KEY", "").strip()
         self.firebase_storage_bucket: str = os.getenv("FIREBASE_STORAGE_BUCKET", "orbscanner-cb055.firebasestorage.app").strip()
+        self.gemini_api_key: str = os.getenv("GEMINI_API_KEY", "").strip()
 
         # Validate timezone
         try:

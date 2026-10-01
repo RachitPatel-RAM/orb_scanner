@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta
 import signal
 import sys
 from typing import List, Optional
@@ -335,7 +335,30 @@ class LiveEngine:
 
         # Start Telegram 1-click interactive approval listener
         from app.trading.order_executor import order_executor
+        from app.strategies.gemini_analyzer import gemini_analyzer
         approval_listener_task = asyncio.create_task(order_executor.run_telegram_listener())
+
+        # Start Hourly AI Market Intelligence Report Loop (Every hour on real Dhan data)
+        async def _hourly_intelligence_loop():
+            while self._running:
+                await asyncio.sleep(3600)  # Every 60 minutes
+                if not self._running:
+                    break
+                now_t = default_session.now()
+                if time(10, 0) <= now_t.time() <= time(15, 35):
+                    try:
+                        hour_str = now_t.strftime("%H:00")
+                        recent_trades = self.paper_tracker.get_closed_trades()
+                        report_text = await gemini_analyzer.generate_hourly_market_report(
+                            recent_trades=recent_trades,
+                            signals_count=len(self.paper_tracker.active_trades) + len(recent_trades),
+                            hour_label=hour_str,
+                        )
+                        await notifier.send_message(report_text, idempotency_key=f"hourly_{now_t.strftime('%Y%m%d_%H')}")
+                    except Exception as e:
+                        logger.debug(f"Error in hourly intelligence loop: {e}")
+
+        hourly_task = asyncio.create_task(_hourly_intelligence_loop())
 
         try:
             logger.info(f"Live ORB Scanner running for {len(instruments)} stocks. Press Ctrl+C to terminate.")
@@ -348,6 +371,7 @@ class LiveEngine:
             renew_task.cancel()
             cleanup_task.cancel()
             approval_listener_task.cancel()
+            hourly_task.cancel()
             await live_feed.stop()
             logger.info("Live ORB scanner shut down cleanly.")
 
