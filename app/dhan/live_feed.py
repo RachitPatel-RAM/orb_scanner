@@ -12,7 +12,7 @@ Maintains a resilient real-time connection to DhanHQ v2 WebSocket feed:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, time
 import json
 import struct
 from typing import Callable, Dict, List, Optional, Set
@@ -36,7 +36,7 @@ class LiveMarketFeed:
     def __init__(
         self,
         on_tick: Optional[Callable[[TickData], None]] = None,
-        stale_threshold_seconds: int = 65,
+        stale_threshold_seconds: int = 120,
     ):
         self.on_tick = on_tick
         self.stale_threshold_seconds = stale_threshold_seconds
@@ -221,8 +221,9 @@ class LiveMarketFeed:
                 break
 
             now = default_session.now()
-            # Only monitor during active trading entry hours (09:15 to 15:25 IST)
-            if default_session.is_market_open(now) and now.time() < default_session.entry_end_time:
+            # Only monitor during active trading entry hours (09:15 to 15:15 IST).
+            # From 15:15 to 15:30, intraday trades are squared off and market winds down.
+            if default_session.is_market_open(now) and now.time() < time(15, 15):
                 if self._last_tick_time:
                     stale_dur = (now - self._last_tick_time).total_seconds()
                     if stale_dur > self.stale_threshold_seconds:

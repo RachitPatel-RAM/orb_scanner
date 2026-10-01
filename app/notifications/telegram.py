@@ -297,19 +297,24 @@ class TelegramNotifier:
         )
         return await self.send_message(text, idempotency_key=idemp)
 
-    async def send_error(self, error_msg: str, cooldown_minutes: int = 15) -> bool:
+    async def send_error(self, error_msg: str, cooldown_minutes: int = 30) -> bool:
         """Sends an operational error alert with spam suppression."""
         now = default_session.now()
 
-        # Suppress identical messages within cooldown period
+        # Deduplicate by error category/prefix to prevent bypass from changing seconds
+        category = error_msg.split(":")[0].strip() if ":" in error_msg else error_msg[:30].strip()
+        last_cat = getattr(self, "_last_error_category", None)
+
+        # Suppress identical categories within cooldown period
         if (
-            self._last_error_message == error_msg
+            last_cat == category
             and self._last_error_time
             and (now - self._last_error_time).total_seconds() < (cooldown_minutes * 60)
         ):
-            logger.info("Suppressed repeated error Telegram alert.")
+            logger.info(f"Suppressed repeated '{category}' error Telegram alert within {cooldown_minutes}m cooldown.")
             return False
 
+        self._last_error_category = category
         self._last_error_message = error_msg
         self._last_error_time = now
 
