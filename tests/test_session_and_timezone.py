@@ -66,6 +66,10 @@ def test_trading_day_weekend_logic():
     sunday = date(2026, 10, 4)
     assert default_session.is_trading_day(sunday) is False
 
-    # 2026-10-02 is Friday (trading day)
-    friday = date(2026, 10, 2)
-    assert default_session.is_trading_day(friday) is True
+    # 2026-10-02 is Mahatma Gandhi Jayanti (Official NSE Holiday)
+    gandhi_jayanti = date(2026, 10, 2)
+    assert default_session.is_trading_day(gandhi_jayanti) is False
+
+    # 2026-10-09 is a regular Friday trading day
+    regular_friday = date(2026, 10, 9)
+    assert default_session.is_trading_day(regular_friday) is True

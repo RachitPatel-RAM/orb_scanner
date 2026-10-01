@@ -23,6 +23,27 @@ def parse_time_str(t_str: str) -> time:
     raise ValueError(f"Invalid time format: {t_str}")
 
 
+NSE_HOLIDAYS = {
+    # 2026 Official NSE Market Holidays
+    date(2026, 1, 26),   # Republic Day
+    date(2026, 3, 3),    # Holi
+    date(2026, 3, 20),   # Id-Ul-Fitr
+    date(2026, 3, 27),   # Ram Navami
+    date(2026, 4, 3),    # Good Friday
+    date(2026, 4, 14),   # Dr. Ambedkar Jayanti
+    date(2026, 5, 1),    # Maharashtra Day
+    date(2026, 5, 27),   # Bakri Id
+    date(2026, 6, 26),   # Muharram
+    date(2026, 8, 15),   # Independence Day
+    date(2026, 10, 2),   # Mahatma Gandhi Jayanti (Tomorrow)
+    date(2026, 10, 20),  # Dussehra
+    date(2026, 11, 8),   # Diwali Laxmi Pujan
+    date(2026, 11, 10),  # Diwali Balipratipada
+    date(2026, 11, 24),  # Gurunanak Jayanti
+    date(2026, 12, 25),  # Christmas
+}
+
+
 class MarketSession:
     """Encapsulates trading session timings and calendar logic."""
 
@@ -53,10 +74,13 @@ class MarketSession:
         return dt.astimezone(self.tz)
 
     def is_trading_day(self, d: Optional[date] = None) -> bool:
-        """Returns True if the given date is Monday-Friday."""
+        """Returns True if the given date is a weekday and not an official NSE holiday."""
         check_date = d or self.now().date()
-        # Monday is 0, Sunday is 6
-        return check_date.weekday() < 5
+        # Saturday (5) or Sunday (6)
+        if check_date.weekday() >= 5:
+            return False
+        # Official NSE holiday check
+        return check_date not in NSE_HOLIDAYS
 
     def is_market_open(self, dt: Optional[datetime] = None) -> bool:
         """Returns True if current time is within 09:15:00 and 15:30:00 on a weekday."""
