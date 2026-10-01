@@ -218,8 +218,13 @@ class HistoricalLearner:
             await asyncio.sleep(0.2)
 
         if not results:
-            logger.warning("No historical bars retrieved. Check Dhan credentials.")
-            return {}
+            logger.warning("No fresh bars retrieved from Dhan. Falling back to cached learned stock models.")
+            cached_models = db.get_all_stock_learned_models()
+            if cached_models:
+                results = cached_models
+            else:
+                logger.warning("No cached models in database.")
+                return {}
 
         # Rank stocks by high volume win rate & overall reliability
         results.sort(key=lambda x: (x["high_vol_win_rate"], x["win_rate"]), reverse=True)

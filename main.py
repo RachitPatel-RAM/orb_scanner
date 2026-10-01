@@ -174,8 +174,8 @@ class LiveEngine:
         now = default_session.now()
         market_open_dt, orb_end_dt, _, _ = default_session.get_session_datetimes(now.date())
 
-        if now <= market_open_dt:
-            logger.info("Market not yet open today. Clean state initialized.")
+        if now <= market_open_dt or now.time() >= default_session.market_close_time or not default_session.is_trading_day(now.date()):
+            logger.info("Market is not currently in session. Intraday state recovery skipped.")
             return
 
         logger.info(f"Late start / restart detected at {now.strftime('%H:%M:%S')}. Recovering session state...")
@@ -402,8 +402,21 @@ class LiveEngine:
         learner_task = asyncio.create_task(_continuous_historical_learner_loop())
 
         try:
-            logger.info(f"Live ORB Scanner running for {len(instruments)} stocks. Press Ctrl+C to terminate.")
-            await live_feed.start()
+            logger.info(f"Live ORB Scanner running for {len(instruments)} stocks (24/7 Engine).")
+            while self._running:
+                now = default_session.now()
+                if default_session.is_market_open(now):
+                    try:
+                        logger.info("Market is OPEN. Connecting to Dhan Live Market Feed...")
+                        await live_feed.start()
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        logger.error(f"Live feed error: {e}. Retrying in 10s...")
+                        await asyncio.sleep(10)
+                else:
+                    # Off-market / Holiday / Weekend: sleep while background tasks (Telegram bot, continuous learner) run!
+                    await asyncio.sleep(30)
         except asyncio.CancelledError:
             pass
         finally:
