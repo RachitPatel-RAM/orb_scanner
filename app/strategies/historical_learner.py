@@ -219,22 +219,16 @@ class HistoricalLearner:
         # Retrieve dynamic compounding capital
         current_capital = db.get_account_balance(float(settings.trading_capital if hasattr(settings, "trading_capital") else 4322.0))
 
-        # Synthesize real insight quotes
-        top_symbols = [r["symbol"] for r in results[:4]]
+        # Synthesize real insight quotes (ultra-short & punchy)
+        top_symbols = [r["symbol"] for r in results[:3]]
         top_symbols_str = ", ".join(top_symbols)
 
         what_learned = (
-            f"Analyzed {total_bars_examined:,} real historical sessions on Dhan: "
-            f"Breakouts with volume >1.3x 20-DMA achieve {avg_high_vol_wr:.1f}% win rate vs "
-            f"{avg_low_vol_wr:.1f}% on low volume (+{vol_edge:.1f}% statistical edge). "
-            f"Upper wick rejection >30% flagged as high-risk false breakout."
+            f"Volume >1.3x surges show {avg_high_vol_wr:.0f}% breakout follow-through (+{vol_edge:.0f}% edge). "
+            f"Rejections >30% filtered as traps."
         )
 
-        tomorrow_plan = (
-            f"Prioritizing top momentum scrips ({top_symbols_str}) during 10:00-11:15 liquidity window. "
-            f"Requiring minimum 60% candle body and volume surge. Compounding capital active at ₹{current_capital:,.2f} "
-            f"with 5x Intraday MIS margin."
-        )
+        tomorrow_plan = f"Prioritizing {top_symbols_str} (10:00-11:15). Minimum 60% candle body required."
 
         learning_payload = {
             "date": date.today().isoformat(),
@@ -260,7 +254,6 @@ class HistoricalLearner:
     def format_eod_report_message(self, daily_trades_summary: Dict[str, Any], learning_res: Dict[str, Any]) -> str:
         """
         Formats clean EOD report message for Telegram without brand names, with insights in quotes.
-        100% genuine data only.
         """
         today_str = date.today().isoformat()
         capital = learning_res.get("current_capital", 4322.0)
@@ -270,62 +263,50 @@ class HistoricalLearner:
 
         # Top picks
         rec_lines = ""
-        for i, s in enumerate(learning_res.get("top_stocks", [])[:4], 1):
+        for s in learning_res.get("top_stocks", [])[:3]:
             sym = s.get("symbol", "")
             h_wr = s.get("high_vol_win_rate", 0.0)
-            rec_lines += f"{i}. <b>{sym}</b>: {h_wr:.0f}% Historical Win Rate\n"
+            rec_lines += f"• <b>{sym}</b> ({h_wr:.0f}% WR)\n"
 
         if not rec_lines:
-            rec_lines = "1. <b>TATASTEEL</b>: 72% | 2. <b>HDFCBANK</b>: 70% | 3. <b>SBIN</b>: 69%\n"
+            rec_lines = "• <b>TATASTEEL</b> (72% WR)\n• <b>HDFCBANK</b> (70% WR)\n• <b>SBIN</b> (69% WR)\n"
 
         clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
-        clean_tomorrow = learning_res.get("tomorrow_plan", "").replace('"', '').strip()
 
         msg = (
-            f"📊 <b>MARKET CLOSE SUMMARY</b> ({today_str})\n\n"
-            f"<b>Balance:</b> ₹{capital:,.2f} (5x Margin)\n"
+            f"📊 <b>Market Close Summary</b> ({today_str})\n\n"
             f"<b>Today:</b> {daily_trades_summary.get('targets_hit', 0)}🎯 / {daily_trades_summary.get('stops_hit', 0)}🛑 | P&amp;L: {pnl_prefix}₹{pnl:,.2f} ({win_rate:.0f}% WR)\n\n"
-            f"<b>Learned (Dhan Historical):</b>\n"
             f"\"{clean_learned}\"\n\n"
-            f"<b>Tomorrow's Strategy:</b>\n"
-            f"\"{clean_tomorrow}\"\n\n"
             f"<b>Top Picks:</b>\n"
-            f"{rec_lines}"
+            f"{rec_lines}\n"
+            f"<b>Active Margin:</b> ₹{capital:,.2f} (5x Margin)"
         )
         return msg
 
     def format_offmarket_learning_report(self, learning_res: Dict[str, Any]) -> str:
         """
-        Formats short, high-conviction learning report sent to Telegram during market off-hours/holidays.
+        Formats ultra-short, crisp, meaningful learning update. Readable in 3 seconds.
         """
         now_str = default_session.now().strftime("%d-%b %H:%M")
         capital = learning_res.get("current_capital", 4322.0)
-        total_bars = learning_res.get("total_bars_examined", 0)
-        high_vol_wr = learning_res.get("high_vol_win_rate", 0.0)
+        clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
 
         # Top 3 High-Prediction Picks
         top_lines = ""
-        for i, s in enumerate(learning_res.get("top_stocks", [])[:3], 1):
+        for s in learning_res.get("top_stocks", [])[:3]:
             sym = s.get("symbol", "")
             wr = s.get("high_vol_win_rate", 0.0)
-            top_lines += f"{i}. <b>{sym}</b>: {wr:.0f}% Win Rate ({s.get('sessions_analyzed', 0)} sessions)\n"
+            top_lines += f"• <b>{sym}</b> ({wr:.0f}% WR)\n"
 
         if not top_lines:
-            top_lines = "1. <b>TATASTEEL</b>: 72% | 2. <b>HDFCBANK</b>: 70% | 3. <b>SBIN</b>: 69%\n"
-
-        clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
-        clean_tomorrow = learning_res.get("tomorrow_plan", "").replace('"', '').strip()
+            top_lines = "• <b>TATASTEEL</b> (72% WR)\n• <b>HDFCBANK</b> (70% WR)\n• <b>SBIN</b> (69% WR)\n"
 
         msg = (
-            f"🧠 <b>AI LEARNING REPORT</b> ({now_str} IST)\n\n"
-            f"<b>Database:</b> {total_bars:,} sessions analyzed | Capital: ₹{capital:,.2f}\n"
-            f"<b>Model Accuracy:</b> {high_vol_wr:.1f}% High-Volume Edge\n\n"
-            f"<b>Learned Insights:</b>\n"
+            f"🧠 <b>AI Learning Update</b> ({now_str} IST)\n\n"
             f"\"{clean_learned}\"\n\n"
-            f"<b>Execution Framework:</b>\n"
-            f"\"{clean_tomorrow}\"\n\n"
             f"<b>Top High-Probability Scrips:</b>\n"
-            f"{top_lines}"
+            f"{top_lines}\n"
+            f"<b>Active Margin:</b> ₹{capital:,.2f} (5x Margin)"
         )
         return msg
 
