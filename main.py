@@ -199,9 +199,9 @@ class LiveEngine:
                     short_sig = sum(r["cnt"] for r in sig_rows if r["direction"] == "SHORT")
                     total_sig = long_sig + short_sig
 
-                    # Trades summary
+                    # Trades summary (only count real live trades linked to signals)
                     tr_rows = conn.execute(
-                        "SELECT exit_reason, pnl, status FROM paper_trades WHERE trade_date = ?",
+                        "SELECT exit_reason, pnl, status FROM paper_trades WHERE trade_date = ? AND signal_id IS NOT NULL",
                         (today_str,),
                     ).fetchall()
                     targets = sum(1 for r in tr_rows if r["exit_reason"] == "TARGET")
@@ -357,6 +357,24 @@ class LiveEngine:
 
         hourly_task = asyncio.create_task(_hourly_intelligence_loop())
 
+        # Continuous background 5-year empirical learning loop (never sits idle/silent)
+        async def _continuous_historical_learner_loop():
+            from app.strategies.historical_learner import historical_learner
+            while self._running:
+                await asyncio.sleep(7200)  # Every 2 hours
+                if not self._running:
+                    break
+                now_t = default_session.now()
+                # Run learning pass outside active market hours
+                if not default_session.is_market_open(now_t):
+                    try:
+                        logger.info("Continuous background 5-year historical learning pass running...")
+                        await historical_learner.run_historical_learning_cycle()
+                    except Exception as e:
+                        logger.debug(f"Continuous background learning error: {e}")
+
+        learner_task = asyncio.create_task(_continuous_historical_learner_loop())
+
         try:
             logger.info(f"Live ORB Scanner running for {len(instruments)} stocks. Press Ctrl+C to terminate.")
             await live_feed.start()
@@ -369,6 +387,7 @@ class LiveEngine:
             cleanup_task.cancel()
             approval_listener_task.cancel()
             hourly_task.cancel()
+            learner_task.cancel()
             await live_feed.stop()
             logger.info("Live ORB scanner shut down cleanly.")
 

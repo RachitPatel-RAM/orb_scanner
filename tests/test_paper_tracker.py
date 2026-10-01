@@ -7,8 +7,16 @@ import pytest
 
 from app.config import BacktestCosts
 from app.market.session import IST_TZ
+from app.storage.database import db
 from app.storage.models import Candle, Direction, ExitReason, Signal
 from app.trading.paper_tracker import PaperTracker, calculate_trade_costs
+
+
+@pytest.fixture(autouse=True)
+def clean_test_trades():
+    yield
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM paper_trades WHERE signal_id IS NULL")
 
 
 def test_target_and_stop_hit():

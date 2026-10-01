@@ -281,17 +281,15 @@ class HistoricalLearner:
         clean_tomorrow = learning_res.get("tomorrow_plan", "").replace('"', '').strip()
 
         msg = (
-            f"📊 <b>MARKET CLOSE SUMMARY &amp; DAILY REPORT</b>\n\n"
-            f"<b>Date:</b> {today_str}\n"
-            f"<b>Trading Capital:</b> ₹{capital:,.2f} (5x Margin Active)\n"
-            f"<b>Today's Result:</b> {daily_trades_summary.get('targets_hit', 0)}🎯 / {daily_trades_summary.get('stops_hit', 0)}🛑 | P&amp;L: {pnl_prefix}₹{pnl:,.2f} ({win_rate:.1f}% WR)\n\n"
-            f"<b>What the Model Learned (100% Real Dhan Data):</b>\n"
+            f"📊 <b>MARKET CLOSE SUMMARY</b> ({today_str})\n\n"
+            f"<b>Balance:</b> ₹{capital:,.2f} (5x Margin)\n"
+            f"<b>Today:</b> {daily_trades_summary.get('targets_hit', 0)}🎯 / {daily_trades_summary.get('stops_hit', 0)}🛑 | P&amp;L: {pnl_prefix}₹{pnl:,.2f} ({win_rate:.0f}% WR)\n\n"
+            f"<b>Learned (Dhan Historical):</b>\n"
             f"\"{clean_learned}\"\n\n"
-            f"<b>Tomorrow's Implementation Strategy:</b>\n"
+            f"<b>Tomorrow's Strategy:</b>\n"
             f"\"{clean_tomorrow}\"\n\n"
-            f"⭐ <b>Top Ranked Momentum Stocks for Tomorrow:</b>\n"
-            f"{rec_lines}\n"
-            f"<i>Orders execute strictly on your 1-click Telegram approval.</i>"
+            f"<b>Top Picks:</b>\n"
+            f"{rec_lines}"
         )
         return msg
 
