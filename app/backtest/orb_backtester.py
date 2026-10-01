@@ -120,7 +120,100 @@ class ORBBacktester:
         # 7. Print Console Summary
         self._print_console_summary(metrics)
 
+        # 8. Send Telegram Report
+        try:
+            await self.send_telegram_report(metrics, from_date, to_date, universe_mode)
+        except Exception as e:
+            logger.debug(f"Failed to dispatch Telegram backtest report: {e}")
+
         return metrics
+
+    async def send_telegram_report(
+        self,
+        metrics: BacktestSummaryMetrics,
+        from_date: date,
+        to_date: date,
+        universe: str,
+        capital: float = 5000.0,
+    ) -> bool:
+        """Sends rich Telegram backtest report with capital simulation and top performers."""
+        from app.notifications.telegram import notifier
+        if not notifier.is_configured:
+            return False
+
+        # Capital simulation: assuming 1% risk per trade on given capital
+        risk_per_trade = capital * 0.01
+        sim_pnl = metrics.total_trades * metrics.average_r * risk_per_trade if metrics.total_trades else 0.0
+        sim_roi = (sim_pnl / capital) * 100.0 if capital > 0 else 0.0
+        sim_dd = (metrics.max_drawdown_pct / 100.0) * capital
+
+        # Top performers
+        top_stocks = sorted(metrics.stock_pnl.items(), key=lambda x: x[1]["net_pnl"], reverse=True)[:3]
+        top_str = ""
+        for i, (sym, d) in enumerate(top_stocks, 1):
+            top_str += f"{i}. <b>{sym}</b>: +₹{d['net_pnl']:,.2f} ({d['win_rate']:.0f}% win)\n"
+
+        if not top_str:
+            top_str = "None\n"
+
+        text = (
+            "📊 <b>ORB HISTORICAL BACKTEST REPORT</b>\n\n"
+            f"<b>Strategy:</b> {self.strategy_config.name}\n"
+            f"<b>Period:</b> {from_date} to {to_date}\n"
+            f"<b>Universe:</b> {universe.upper()} ({metrics.trading_days} Trading Days)\n\n"
+            f"<b>Total Trades:</b> {metrics.total_trades}\n"
+            f"<b>Win Rate:</b> <b>{metrics.win_rate:.1f}%</b> ({metrics.winning_trades}W / {metrics.losing_trades}L)\n"
+            f"<b>Profit Factor:</b> {metrics.profit_factor:.2f}\n"
+            f"<b>Average R-Multiple:</b> {metrics.average_r:+.2f}R\n"
+            f"<b>Total Net P&L:</b> ₹{metrics.net_pnl:+,.2f}\n\n"
+            f"💰 <b>₹{capital:,.0f} Capital Simulation:</b>\n"
+            f"• <b>Simulated P&L:</b> +₹{sim_pnl:,.2f} ({sim_roi:+.1f}% ROI)\n"
+            f"• <b>Max Drawdown:</b> -₹{sim_dd:,.2f} ({metrics.max_drawdown_pct:.1f}%)\n\n"
+            f"🏆 <b>Top Performers:</b>\n"
+            f"{top_str}\n"
+            f"<i>Full CSV & interactive HTML report generated in reports/</i>"
+        )
+        return await notifier.send_message(text)
+
+    async def compare_timeframes(
+        self,
+        from_date: date,
+        to_date: date,
+        universe_mode: str = "nifty50",
+        timeframes: Optional[List[int]] = None,
+    ) -> Dict[int, BacktestSummaryMetrics]:
+        """
+        Runs backtests across 15m, 30m, and 60m candles to compare win rates.
+        Dispatches multi-timeframe comparison matrix to Telegram.
+        """
+        timeframes = timeframes or [15, 30, 60]
+        results = {}
+        for tf in timeframes:
+            cfg = self.strategy_config.model_copy(deep=True)
+            cfg.signal_timeframe = tf
+            cfg.name = f"ORB-{tf}"
+            tester = ORBBacktester(strategy_config=cfg, costs=self.costs, debug_mode=self.debug_mode)
+            res = await tester.run(from_date, to_date, universe_mode)
+            results[tf] = res
+
+        from app.notifications.telegram import notifier
+        if notifier.is_configured:
+            rows = ""
+            for tf, m in results.items():
+                rows += (
+                    f"• <b>{tf}m Candle</b>: Win Rate: <b>{m.win_rate:.1f}%</b> | "
+                    f"Trades: {m.total_trades} | Profit Factor: {m.profit_factor:.2f} | Avg R: {m.average_r:+.2f}R\n"
+                )
+            msg = (
+                "🔬 <b>ORB TIMEFRAME COMPARISON ANALYSIS</b>\n\n"
+                f"<b>Period:</b> {from_date} to {to_date}\n"
+                f"<b>Universe:</b> {universe_mode.upper()}\n\n"
+                f"{rows}\n"
+                "<i>Higher timeframe (30m/60m) produces fewer false breakouts, while 15m gives earlier entries.</i>"
+            )
+            await notifier.send_message(msg)
+
+        return results
 
     def _export_reports(
         self,

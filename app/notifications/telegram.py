@@ -64,7 +64,12 @@ class TelegramNotifier:
             logger.warning(f"Error querying getUpdates: {e}")
         return None
 
-    async def send_message(self, text: str, idempotency_key: Optional[str] = None) -> bool:
+    async def send_message(
+        self,
+        text: str,
+        idempotency_key: Optional[str] = None,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """
         Sends a Markdown-formatted message to Telegram.
         Catches all network and API exceptions to ensure market engine never crashes.
@@ -79,12 +84,14 @@ class TelegramNotifier:
             return True
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
+        payload: Dict[str, Any] = {
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
 
         success = False
         last_err: Optional[str] = None
@@ -200,7 +207,10 @@ class TelegramNotifier:
         return await self.send_message(msg)
 
     async def send_signal(self, signal: Signal) -> bool:
-        """Dispatches rich breakout alert matching required specification."""
+        """Dispatches rich breakout alert with 1-click execution button showing whole lot price."""
+        from app.trading.order_executor import order_executor
+        reply_markup, lot_size, total_lot_price = order_executor.register_signal_for_approval(signal)
+
         is_long = signal.direction == Direction.LONG
         header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
         time_str = signal.timestamp.strftime("%H:%M")
@@ -216,10 +226,17 @@ class TelegramNotifier:
             f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n"
             f"<b>Target:</b> ₹{signal.target:,.2f}\n"
             f"<b>Risk Reward:</b> 1:{signal.risk_reward:g}\n\n"
+            f"<b>Lot Size:</b> {lot_size} units\n"
+            f"<b>Total Lot Value:</b> ₹{total_lot_price:,.2f}\n\n"
             f"<b>Confirmation:</b> {settings.strategy.signal_timeframe}-minute candle close\n"
-            f"<b>Strategy:</b> {signal.strategy}"
+            f"<b>Strategy:</b> {signal.strategy}\n\n"
+            f"<i>Tap the button below to execute 1 lot with Target & Stop Loss attached:</i>"
         )
-        return await self.send_message(text, idempotency_key=signal.idempotency_key)
+        return await self.send_message(
+            text,
+            idempotency_key=signal.idempotency_key,
+            reply_markup=reply_markup,
+        )
 
     async def send_target_hit(self, trade: PaperTrade) -> bool:
         """Sends alert when a paper trade reaches its target."""

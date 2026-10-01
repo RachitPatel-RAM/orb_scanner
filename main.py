@@ -311,6 +311,10 @@ class LiveEngine:
 
         cleanup_task = asyncio.create_task(_telegram_cleanup_loop())
 
+        # Start Telegram 1-click interactive approval listener
+        from app.trading.order_executor import order_executor
+        approval_listener_task = asyncio.create_task(order_executor.run_telegram_listener())
+
         try:
             logger.info(f"Live ORB Scanner running for {len(instruments)} stocks. Press Ctrl+C to terminate.")
             await live_feed.start()
@@ -321,6 +325,7 @@ class LiveEngine:
             watchdog_task.cancel()
             renew_task.cancel()
             cleanup_task.cancel()
+            approval_listener_task.cancel()
             await live_feed.stop()
             logger.info("Live ORB scanner shut down cleanly.")
 
@@ -434,8 +439,10 @@ async def cmd_backtest(
     symbols: Optional[str] = None,
     debug: bool = False,
     force_download: bool = False,
+    compare: bool = False,
+    capital: float = 5000.0,
 ) -> None:
-    """Runs historical backtest on Dhan OHLCV data."""
+    """Runs historical backtest on Dhan OHLCV data with optional timeframe comparison."""
     # Ensure instrument master is loaded
     if not instrument_manager.is_cache_valid():
         await instrument_manager.download_master()
@@ -446,13 +453,20 @@ async def cmd_backtest(
     custom_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
 
     backtester = ORBBacktester(debug_mode=debug)
-    await backtester.run(
-        from_date=start_date,
-        to_date=end_date,
-        universe_mode=universe,
-        custom_symbols=custom_list,
-        force_download=force_download,
-    )
+    if compare:
+        await backtester.compare_timeframes(
+            from_date=start_date,
+            to_date=end_date,
+            universe_mode=universe,
+        )
+    else:
+        await backtester.run(
+            from_date=start_date,
+            to_date=end_date,
+            universe_mode=universe,
+            custom_symbols=custom_list,
+            force_download=force_download,
+        )
 
 
 async def cmd_renew() -> None:
@@ -537,6 +551,8 @@ def main() -> None:
     bt_parser.add_argument("--symbols", help="Comma-separated symbols (e.g. RELIANCE,TCS)")
     bt_parser.add_argument("--debug", action="store_true", help="Print TradingView comparison debugging lines")
     bt_parser.add_argument("--force-download", action="store_true", help="Force re-download historical data")
+    bt_parser.add_argument("--compare", action="store_true", help="Compare 15m, 30m, and 60m timeframes")
+    bt_parser.add_argument("--capital", type=float, default=5000.0, help="Simulated trading capital (default: 5000)")
 
     # status
     subparsers.add_parser("status", help="Show system status and database statistics")
@@ -564,6 +580,8 @@ def main() -> None:
                 symbols=args.symbols,
                 debug=args.debug,
                 force_download=args.force_download,
+                compare=args.compare,
+                capital=args.capital,
             )
         )
     elif args.command == "status":

@@ -45,6 +45,7 @@ class InstrumentManager:
         self.symbol_to_sec_id: Dict[str, str] = {}
         self.instruments_by_id: Dict[str, InstrumentInfo] = {}
         self.fno_symbols: Set[str] = set()
+        self.fno_lot_sizes: Dict[str, int] = {}
 
     def is_cache_valid(self) -> bool:
         """Checks if local cached CSV exists and is within refresh interval."""
@@ -109,7 +110,16 @@ class InstrumentManager:
                     c_sym = r.get("SEM_CUSTOM_SYMBOL", r.get("SEM_TRADING_SYMBOL", ""))
                     parts = c_sym.split()
                     if parts:
-                        self.fno_symbols.add(parts[0])
+                        root = parts[0]
+                        self.fno_symbols.add(root)
+                        lot_str = r.get("SEM_LOT_UNITS", r.get("LOT_SIZE", ""))
+                        if lot_str and root not in self.fno_lot_sizes:
+                            try:
+                                l_val = int(float(lot_str))
+                                if l_val > 0:
+                                    self.fno_lot_sizes[root] = l_val
+                            except (ValueError, TypeError):
+                                pass
 
                 # Filter for NSE Equity by default
                 if exch != "NSE" or (inst_type and inst_type != "EQUITY"):
@@ -187,6 +197,17 @@ class InstrumentManager:
     def get_instrument_info(self, security_id: str) -> Optional[InstrumentInfo]:
         """Gets full metadata for security_id."""
         return self.instruments_by_id.get(str(security_id).strip())
+
+    def get_lot_size(self, symbol_or_sec_id: str) -> int:
+        """Returns lot size (F&O lot size if available, otherwise equity lot size or 1)."""
+        key = str(symbol_or_sec_id).strip().upper()
+        clean_sym = self.sec_id_to_symbol.get(key, key).replace("-EQ", "")
+        if clean_sym in self.fno_lot_sizes:
+            return self.fno_lot_sizes[clean_sym]
+        inst = self.instruments_by_id.get(key)
+        if inst and inst.lot_size:
+            return inst.lot_size
+        return 1
 
     def resolve_universe(self, mode: Optional[str] = None) -> List[InstrumentInfo]:
         """
