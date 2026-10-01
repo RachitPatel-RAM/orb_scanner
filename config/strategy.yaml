@@ -1,0 +1,60 @@
+strategy:
+  name: ORB-15
+
+session:
+  timezone: Asia/Kolkata
+  market_open: "09:15"
+  orb_start: "09:30"
+  orb_end: "09:45"
+  entry_end: "15:25"
+  market_close: "15:30"
+
+candles:
+  signal_timeframe: 15
+
+entry:
+  confirmation: candle_close
+  breakout_buffer_pct: 0.0
+  max_signals_per_symbol_per_day: 1
+  direction: both # 'both', 'long', 'short'
+
+risk:
+  stop_method: opposite_or # 'opposite_or', 'orb_midpoint', 'fixed_percent'
+  fixed_stop_pct: 0.5
+  risk_reward: 2.0
+  min_tick_size: 0.05
+
+filters:
+  ema:
+    enabled: false
+    period: 50
+
+  volume:
+    enabled: false
+    period: 20
+    multiplier: 1.0
+
+  price_range:
+    enabled: false
+    min_price: 50.0
+    max_price: 10000.0
+
+  orb_width:
+    enabled: false
+    min_width_pct: 0.2
+    max_width_pct: 3.5
+
+  liquidity:
+    enabled: false
+    min_volume: 100000
+
+backtest:
+  costs:
+    brokerage_pct: 0.03 # 0.03% or flat 20 per order
+    max_brokerage_per_order: 20.0
+    stt_pct: 0.025 # On sell turnover for intraday equity
+    exchange_charges_pct: 0.00297 # NSE turnover charge
+    gst_pct: 18.0 # On (brokerage + exchange charges)
+    sebi_turnover_pct: 0.0001
+    stamp_duty_pct: 0.003 # On buy side
+    slippage_pct: 0.02 # Execution slippage per leg
