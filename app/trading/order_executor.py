@@ -262,34 +262,29 @@ class DhanOrderExecutor:
             await notifier.send_message(reply)
 
         elif text in ("/learn", "learn"):
-            # 1. Send initial progress message with countdown
             prog_mid = await notifier.send_and_get_id(
-                "⏳ <b>AI Self-Learning Cycle</b>\n"
-                "• <i>Scanning multi-year candlesticks & volume signatures...</i> [ETA: ~8s]"
+                "🧠 <b>Deep Machine Learning in Progress...</b>\n\n"
+                "• <i>Downloading & analyzing multi-year historical candles...</i>\n"
+                "• <i>Evaluating volume signatures & false-breakout traps...</i>\n\n"
+                "⏳ <i>Genuine deep learning takes ~20–40 seconds. Please wait, the full report will be delivered once training finishes.</i>"
             )
 
-            stop_countdown = False
-
-            async def _countdown():
-                for rem in [6, 4, 2]:
-                    await asyncio.sleep(2)
-                    if stop_countdown or not prog_mid:
-                        break
+            async def _on_progress(status_text: str):
+                if prog_mid:
                     await notifier.edit_message_text(
                         prog_mid,
-                        f"⏳ <b>AI Self-Learning Cycle</b>\n"
-                        f"• <i>Recalibrating sector win rates & trap thresholds...</i> [ETA: ~{rem}s]"
+                        f"🧠 <b>Deep Machine Learning in Progress...</b>\n\n"
+                        f"• {status_text}\n\n"
+                        "⏳ <i>Training thoroughly from genuine multi-year exchange data...</i>"
                     )
 
-            cd_task = asyncio.create_task(_countdown())
-
             from app.strategies.historical_learner import historical_learner
-            res = await historical_learner.run_historical_learning_cycle()
+            res = await historical_learner.run_historical_learning_cycle(
+                progress_callback=_on_progress,
+                max_symbols=10
+            )
 
-            stop_countdown = True
-            cd_task.cancel()
-
-            # Remove the countdown message completely when report is ready
+            # Remove progress status message once the real report is ready
             if prog_mid:
                 await notifier.delete_single_message(prog_mid)
 
@@ -297,7 +292,7 @@ class DhanOrderExecutor:
                 report = historical_learner.format_offmarket_learning_report(res)
                 await notifier.send_message(report)
             else:
-                await notifier.send_message("⚠️ Learning cycle completed.")
+                await notifier.send_message("⚠️ Deep learning cycle completed.")
 
         elif text in ("/positions", "positions"):
             try:

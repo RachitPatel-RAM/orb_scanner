@@ -229,11 +229,12 @@ class HistoricalLearner:
     async def run_historical_learning_cycle(
         self,
         symbols: Optional[List[str]] = None,
-        max_symbols: int = 6,
+        max_symbols: int = 10,
+        progress_callback: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
-        Runs empirical learning cycle directly on genuine market candles.
-        Rotates across real NSE sectors, evaluates raw price action, and recalibrates weights.
+        Runs in-depth empirical learning cycle directly on genuine market candles.
+        Takes full time to evaluate multi-year raw price action, traps, and recalibrates weights.
         """
         self._cycle_count += 1
         current_sector = SECTOR_KEYS[(self._cycle_count - 1) % len(SECTOR_KEYS)]
@@ -247,7 +248,13 @@ class HistoricalLearner:
         results = []
         total_bars_examined = 0
 
-        for sym in symbols:
+        for idx, sym in enumerate(symbols, 1):
+            if progress_callback and callable(progress_callback):
+                try:
+                    await progress_callback(f"Deep learning on {sym} ({idx}/{len(symbols)} stocks in {current_sector})...")
+                except Exception:
+                    pass
+
             sec_id = instrument_manager.get_security_id(sym) or ""
             bars = await self.fetch_stock_historical_bars(sec_id, sym)
             if bars:
@@ -265,7 +272,13 @@ class HistoricalLearner:
                         optimal_vol_ratio=eval_res["optimal_vol_ratio"],
                     )
                     asyncio.create_task(firebase_sync.save_stock_learned_model(sym, eval_res))
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.3)
+
+        if progress_callback and callable(progress_callback):
+            try:
+                await progress_callback(f"Synthesizing ML conviction weights across {len(results)} evaluated stocks...")
+            except Exception:
+                pass
 
         # Fallback to persistent database models if network failed
         if not results:
