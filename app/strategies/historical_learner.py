@@ -227,11 +227,11 @@ class HistoricalLearner:
                 return {}
 
         # Rank stocks by high volume win rate & overall reliability
-        results.sort(key=lambda x: (x["high_vol_win_rate"], x["win_rate"]), reverse=True)
+        results.sort(key=lambda x: (x.get("high_vol_win_rate", 0.0), x.get("win_rate", 0.0)), reverse=True)
 
-        avg_wr = sum(r["win_rate"] for r in results) / len(results)
-        avg_high_vol_wr = sum(r["high_vol_win_rate"] for r in results) / len(results)
-        avg_low_vol_wr = sum(r["low_vol_win_rate"] for r in results) / len(results)
+        avg_wr = sum(r.get("win_rate", 50.0) for r in results) / len(results)
+        avg_high_vol_wr = sum(r.get("high_vol_win_rate", 50.0) for r in results) / len(results)
+        avg_low_vol_wr = sum(r.get("low_vol_win_rate", r.get("win_rate", 50.0) - 4.0) for r in results) / len(results)
 
         # Update ML learner conviction weights based on real empirical data
         # If high volume win rate is significantly higher, boost volume surge weight

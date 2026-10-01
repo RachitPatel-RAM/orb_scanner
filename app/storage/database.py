@@ -485,7 +485,7 @@ class Database:
                 INSERT INTO settings_kv (key, value, updated_at)
                 VALUES ('learned_model_state', ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-            """, (json.dumps(state),))
+            """, (json.dumps(state, default=str),))
 
     def get_learned_state(self) -> Optional[Dict[str, Any]]:
         """Retrieves learned ML/statistical model state from key-value store."""

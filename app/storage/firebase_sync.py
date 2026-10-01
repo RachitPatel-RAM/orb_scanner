@@ -15,6 +15,9 @@ import httpx
 from app.config import logger, settings
 
 
+import json
+
+
 class FirebaseSyncManager:
     """Manages cloud persistence of ML weights, reports, and stock recommendations."""
 
@@ -23,13 +26,16 @@ class FirebaseSyncManager:
         self.api_key = settings.firebase_api_key
         self.base_url = f"https://{self.project_id}-default-rtdb.firebaseio.com"
 
+    def _sanitize(self, data: Any) -> Any:
+        return json.loads(json.dumps(data, default=str))
+
     async def save_model_weights(self, weights: Dict[str, Any]) -> bool:
         """Saves learned ML candlestick weights to Firebase."""
         url = f"{self.base_url}/ml_model/weights.json"
-        data = {
+        data = self._sanitize({
             "updated_at": datetime.now().isoformat(),
             "weights": weights,
-        }
+        })
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.put(url, json=data)
@@ -57,7 +63,7 @@ class FirebaseSyncManager:
         url = f"{self.base_url}/daily_reports/{report_key}.json"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.put(url, json=report_data)
+                resp = await client.put(url, json=self._sanitize(report_data))
                 return resp.status_code == 200
         except Exception as e:
             logger.warning(f"Error saving report to Firebase: {e}")
@@ -66,10 +72,10 @@ class FirebaseSyncManager:
     async def save_stock_rankings(self, rankings: List[Dict[str, Any]]) -> bool:
         """Saves top recommended stocks and quality scores to Firebase."""
         url = f"{self.base_url}/recommendations/latest.json"
-        payload = {
+        payload = self._sanitize({
             "updated_at": datetime.now().isoformat(),
             "stocks": rankings,
-        }
+        })
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.put(url, json=payload)
@@ -81,11 +87,11 @@ class FirebaseSyncManager:
     async def save_stock_learned_model(self, symbol: str, model_data: Dict[str, Any]) -> bool:
         """Saves a stock's continuous empirical learned model to Firebase Realtime Database."""
         url = f"{self.base_url}/stock_learned_models/{symbol}.json"
-        payload = {
+        payload = self._sanitize({
             "symbol": symbol,
             "updated_at": datetime.now().isoformat(),
             **model_data,
-        }
+        })
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.put(url, json=payload)
@@ -97,10 +103,10 @@ class FirebaseSyncManager:
     async def save_live_account_state(self, account_data: Dict[str, Any]) -> bool:
         """Saves live Dhan account balance, margin, and funds to Firebase Realtime Database."""
         url = f"{self.base_url}/account/live_funds.json"
-        payload = {
+        payload = self._sanitize({
             "updated_at": datetime.now().isoformat(),
             **account_data,
-        }
+        })
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.put(url, json=payload)
@@ -111,3 +117,4 @@ class FirebaseSyncManager:
 
 
 firebase_sync = FirebaseSyncManager()
+
