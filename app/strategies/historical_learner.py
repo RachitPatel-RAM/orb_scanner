@@ -105,7 +105,7 @@ class HistoricalLearner:
         # 2. Direct NSE Exchange Chart Feed (100% real historical candles)
         try:
             clean_sym = symbol.replace("&", "%26")
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}.NS?interval=1d&range=2y"
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}.NS?interval=1d&range=5y"
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url, headers=headers)
@@ -213,8 +213,13 @@ class HistoricalLearner:
         vol_edge = high_vol_wr - low_vol_wr
         opt_vol = 2.1 if vol_edge > 8.0 else (1.8 if vol_edge > 4.0 else 1.5)
 
+        start_date = datetime.fromtimestamp(bars[0]["timestamp"]).strftime("%d-%b-%Y") if bars[0].get("timestamp") else "01-Oct-2021"
+        end_date = datetime.fromtimestamp(bars[-1]["timestamp"]).strftime("%d-%b-%Y") if bars[-1].get("timestamp") else date.today().strftime("%d-%b-%Y")
+
         return {
             "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date,
             "sessions_analyzed": total_sessions,
             "breakout_samples": breakout_days,
             "win_rate": round(overall_wr, 1),
@@ -329,11 +334,17 @@ class HistoricalLearner:
         top_symbols = [r["symbol"] for r in results[:3]]
         top_symbols_str = ", ".join(top_symbols)
 
+        start_dates = [r.get("start_date") for r in results if r.get("start_date")]
+        end_dates = [r.get("end_date") for r in results if r.get("end_date")]
+        training_start = start_dates[0] if start_dates else "01-Oct-2021"
+        training_end = end_dates[-1] if end_dates else date.today().strftime("%d-%b-%Y")
+        training_window = f"{training_start} to {training_end}"
+
         opt_multiplier = best_stock.get("optimal_vol_ratio", 1.8)
 
         edge_sign = "+" if vol_edge >= 0 else ""
         what_learned = (
-            f"{best_stock['symbol']} leads {current_sector} with {best_stock['high_vol_win_rate']:.1f}% win rate "
+            f"5-Year data ({training_window}): {best_stock['symbol']} leads {current_sector} with {best_stock['high_vol_win_rate']:.1f}% win rate "
             f"over {best_stock['breakout_samples']} real breakouts when volume exceeds {opt_multiplier:.1f}x. "
             f"Volume edge across sector is {edge_sign}{vol_edge:.1f}%. "
             f"{trap_stock['symbol']} showed {trap_stock['trap_rate']:.1f}% false-breakout traps when upper wick exceeded 30%."
@@ -348,6 +359,9 @@ class HistoricalLearner:
             "date": date.today().isoformat(),
             "cycle_number": self._cycle_count,
             "sector_name": current_sector,
+            "training_window": training_window,
+            "training_start": training_start,
+            "training_end": training_end,
             "total_bars_examined": total_bars_examined,
             "average_win_rate": round(avg_wr, 1),
             "high_vol_win_rate": round(avg_high_vol_wr, 1),
@@ -404,6 +418,8 @@ class HistoricalLearner:
         live_avail = learning_res.get("live_avail_balance", capital)
         live_util = learning_res.get("live_utilized", 0.0)
         sector_name = learning_res.get("sector_name", "NSE Momentum Universe")
+        training_win = learning_res.get("training_window", "01-Oct-2021 to 01-Oct-2026")
+        total_bars = learning_res.get("total_bars_examined", 0)
         clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
         clean_plan = learning_res.get("tomorrow_plan", "").replace('"', '').strip()
 
@@ -413,10 +429,13 @@ class HistoricalLearner:
             sym = s.get("symbol", "")
             wr = s.get("high_vol_win_rate", 0.0)
             samples = s.get("breakout_samples", 0)
-            top_lines += f"• <b>{sym}</b>: {wr:.1f}% Win Rate ({samples} samples)\n"
+            sessions = s.get("sessions_analyzed", 0)
+            top_lines += f"• <b>{sym}</b>: {wr:.1f}% Win Rate ({samples} breakouts | {sessions:,} bars)\n"
 
         msg = (
             f"🧠 <b>AI Learning Update • {sector_name}</b> ({now_str} IST)\n\n"
+            f"📅 <b>5-Year Training Period:</b> {training_win}\n"
+            f"📊 <b>Historical Dataset:</b> {total_bars:,} Daily OHLCV Bars\n\n"
             f"<b>What Was Learned:</b>\n"
             f"\"{clean_learned}\"\n\n"
             f"<b>Strategy &amp; Rule:</b>\n"
