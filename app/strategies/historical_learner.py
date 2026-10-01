@@ -212,6 +212,8 @@ class HistoricalLearner:
                         sessions_analyzed=eval_res["sessions_analyzed"],
                         optimal_vol_ratio=1.3,
                     )
+                    # Sync each stock's empirical model to Firebase Realtime Database
+                    asyncio.create_task(firebase_sync.save_stock_learned_model(sym, eval_res))
             # Gentle rate limiting
             await asyncio.sleep(0.2)
 
@@ -233,8 +235,21 @@ class HistoricalLearner:
             ml_learner.weights["volume_surge_weight"] = min(35.0, ml_learner.weights.get("volume_surge_weight", 30.0) + 2.0)
             ml_learner.weights["rejection_penalty"] = max(-30.0, ml_learner.weights.get("rejection_penalty", -25.0) - 2.0)
 
-        # Retrieve dynamic compounding capital
+        # Retrieve dynamic compounding capital & live Dhan account funds
         current_capital = db.get_account_balance(float(settings.trading_capital if hasattr(settings, "trading_capital") else 4322.0))
+        live_avail_balance = current_capital
+        live_utilized = 0.0
+        try:
+            from app.trading.order_executor import order_executor
+            fund_resp = order_executor.client.get_fund_limits()
+            if fund_resp and fund_resp.get("status") == "success":
+                fdata = fund_resp.get("data", {})
+                live_avail_balance = float(fdata.get("availabelBalance", current_capital))
+                live_utilized = float(fdata.get("utilizedAmount", 0.0))
+                # Sync live account state to Firebase Realtime Database
+                asyncio.create_task(firebase_sync.save_live_account_state(fdata))
+        except Exception as e:
+            logger.debug(f"Could not fetch live Dhan fund limits: {e}")
 
         # Synthesize plain-English insight quotes that are easy to understand
         top_symbols = [r["symbol"] for r in results[:3]]
@@ -242,7 +257,7 @@ class HistoricalLearner:
 
         what_learned = (
             f"{top_symbols_str} show strongest follow-through when morning volume doubles. "
-            f"Candles with long opposing wicks fail and reverse, so the AI now blocks those fake breakout traps."
+            f"09:30–09:45 candle must close completely outside opening range. Rejection traps blocked."
         )
 
         tomorrow_plan = (
@@ -261,9 +276,11 @@ class HistoricalLearner:
             "what_learned": what_learned,
             "tomorrow_plan": tomorrow_plan,
             "current_capital": current_capital,
+            "live_avail_balance": live_avail_balance,
+            "live_utilized": live_utilized,
         }
 
-        # Persist to database and cloud
+        # Persist to database and Firebase Realtime Database
         db.save_learned_state(learning_payload)
         await firebase_sync.save_stock_rankings(results[:5])
         await firebase_sync.save_model_weights(ml_learner.weights)
@@ -292,6 +309,8 @@ class HistoricalLearner:
             rec_lines = "• <b>HDFCBANK</b>: 67% Win Rate\n• <b>SBIN</b>: 67% Win Rate\n• <b>RELIANCE</b>: 64% Win Rate\n"
 
         clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
+        live_avail = learning_res.get("live_avail_balance", capital)
+        live_util = learning_res.get("live_utilized", 0.0)
 
         msg = (
             f"📊 <b>Market Close Summary</b> ({today_str})\n\n"
@@ -300,16 +319,18 @@ class HistoricalLearner:
             f"\"{clean_learned}\"\n\n"
             f"<b>Top Picks:</b>\n"
             f"{rec_lines}\n"
-            f"<b>Active Margin:</b> ₹{capital:,.2f} (5x Margin)"
+            f"<b>Live Dhan Account:</b> ₹{live_avail:,.2f} Avail | ₹{live_util:,.2f} Utilized (5x Margin)"
         )
         return msg
 
     def format_offmarket_learning_report(self, learning_res: Dict[str, Any]) -> str:
         """
-        Formats clear, plain-English learning update readable in 3 seconds.
+        Formats clear, plain-English learning update readable in 3 seconds with live Dhan account funds.
         """
         now_str = default_session.now().strftime("%d-%b %H:%M")
         capital = learning_res.get("current_capital", 4322.0)
+        live_avail = learning_res.get("live_avail_balance", capital)
+        live_util = learning_res.get("live_utilized", 0.0)
         clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
         clean_plan = learning_res.get("tomorrow_plan", "").replace('"', '').strip()
 
@@ -331,7 +352,7 @@ class HistoricalLearner:
             f"\"{clean_plan}\"\n\n"
             f"<b>Top High-Win Stocks:</b>\n"
             f"{top_lines}\n"
-            f"<b>Active Margin:</b> ₹{capital:,.2f} (5x Margin)"
+            f"<b>Live Dhan Account:</b> ₹{live_avail:,.2f} Avail | ₹{live_util:,.2f} Utilized (5x Margin)"
         )
         return msg
 

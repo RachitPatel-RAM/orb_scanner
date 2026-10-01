@@ -78,5 +78,36 @@ class FirebaseSyncManager:
             logger.warning(f"Error saving stock rankings to Firebase: {e}")
             return False
 
+    async def save_stock_learned_model(self, symbol: str, model_data: Dict[str, Any]) -> bool:
+        """Saves a stock's continuous empirical learned model to Firebase Realtime Database."""
+        url = f"{self.base_url}/stock_learned_models/{symbol}.json"
+        payload = {
+            "symbol": symbol,
+            "updated_at": datetime.now().isoformat(),
+            **model_data,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.put(url, json=payload)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.warning(f"Error syncing {symbol} learned model to Firebase: {e}")
+            return False
+
+    async def save_live_account_state(self, account_data: Dict[str, Any]) -> bool:
+        """Saves live Dhan account balance, margin, and funds to Firebase Realtime Database."""
+        url = f"{self.base_url}/account/live_funds.json"
+        payload = {
+            "updated_at": datetime.now().isoformat(),
+            **account_data,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.put(url, json=payload)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.warning(f"Error syncing live account funds to Firebase: {e}")
+            return False
+
 
 firebase_sync = FirebaseSyncManager()
