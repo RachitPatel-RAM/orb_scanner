@@ -185,6 +185,8 @@ class DhanOrderExecutor:
                             offset = max(offset, u["update_id"] + 1)
                             if "callback_query" in u:
                                 await self._handle_callback(u["callback_query"])
+                            elif "message" in u:
+                                await self._handle_message_command(u["message"])
                     elif resp.status_code == 429:
                         await asyncio.sleep(5)
                     else:
@@ -195,6 +197,100 @@ class DhanOrderExecutor:
                 except Exception as e:
                     logger.debug(f"Telegram listener polling cycle error: {e}")
                     await asyncio.sleep(2)
+
+    async def _handle_message_command(self, msg: Dict[str, Any]):
+        """Processes interactive chat commands from user (balance, positions, status, orders)."""
+        chat = msg.get("chat", {})
+        chat_id = str(chat.get("id", ""))
+        text = str(msg.get("text", "")).strip().lower()
+
+        # Security check: only authorized telegram chat
+        if chat_id != str(settings.telegram_chat_id).strip():
+            return
+
+        from app.notifications.telegram import notifier
+
+        if text in ("/balance", "/funds", "balance", "funds"):
+            try:
+                fund_resp = self.client.get_fund_limits()
+                if fund_resp and fund_resp.get("status") == "success":
+                    data = fund_resp.get("data", {})
+                    avail = float(data.get("availabelBalance", 0.0))
+                    utilized = float(data.get("utilizedAmount", 0.0))
+                    withdrawable = float(data.get("withdrawableBalance", 0.0))
+                    cid = data.get("dhanClientId", settings.dhan_client_id)
+                    reply = (
+                        "💰 <b>Live Dhan Account Funds</b>\n\n"
+                        f"• <b>Available Margin:</b> ₹{avail:,.2f}\n"
+                        f"• <b>Utilized Margin:</b> ₹{utilized:,.2f}\n"
+                        f"• <b>Withdrawable:</b> ₹{withdrawable:,.2f}\n"
+                        f"• <b>5x Intraday Buying Power:</b> ₹{avail * 5:,.2f}\n"
+                        f"• <b>Client ID:</b> <code>{cid}</code>"
+                    )
+                else:
+                    reply = "⚠️ Could not retrieve live Dhan funds."
+            except Exception as e:
+                reply = f"⚠️ Error querying Dhan API: {e}"
+            await notifier.send_message(reply)
+
+        elif text in ("/positions", "positions"):
+            try:
+                pos_resp = self.client.get_positions()
+                positions = pos_resp.get("data", []) if isinstance(pos_resp, dict) else []
+                if not positions:
+                    reply = "📊 <b>Dhan Positions:</b> No active open positions right now."
+                else:
+                    pos_lines = ""
+                    for p in positions:
+                        sym = p.get("tradingSymbol", "Unknown")
+                        net_qty = p.get("netQty", 0)
+                        pnl = p.get("realizedProfit", 0.0) + p.get("unrealizedProfit", 0.0)
+                        pos_lines += f"• <b>{sym}</b>: Qty {net_qty} | P&amp;L: ₹{pnl:,.2f}\n"
+                    reply = f"📊 <b>Active Dhan Positions:</b>\n\n{pos_lines}"
+            except Exception as e:
+                reply = f"⚠️ Error querying Dhan positions: {e}"
+            await notifier.send_message(reply)
+
+        elif text in ("/orders", "orders"):
+            try:
+                ord_resp = self.client.get_order_list()
+                orders = ord_resp.get("data", []) if isinstance(ord_resp, dict) else []
+                if not orders:
+                    reply = "📋 <b>Dhan Orders:</b> No orders placed today."
+                else:
+                    ord_lines = ""
+                    for o in orders[-5:]:
+                        sym = o.get("tradingSymbol", "Unknown")
+                        stat = o.get("orderStatus", "N/A")
+                        price = o.get("price", 0.0)
+                        qty = o.get("quantity", 0)
+                        ord_lines += f"• <b>{sym}</b> ({qty} Qty @ ₹{price}): {stat}\n"
+                    reply = f"📋 <b>Recent Dhan Orders:</b>\n\n{ord_lines}"
+            except Exception as e:
+                reply = f"⚠️ Error querying Dhan orders: {e}"
+            await notifier.send_message(reply)
+
+        elif text in ("/status", "status"):
+            reply = (
+                "⚡ <b>ORB Scanner System Status</b>\n\n"
+                "• <b>Mode:</b> 24/7 Continuous Machine Learning Active\n"
+                "• <b>Strategy:</b> 15m Breakout (09:30–09:45 Confirmation)\n"
+                "• <b>ML Filter:</b> High-Probability (>=65% Conviction)\n"
+                "• <b>Cloud Sync:</b> Firebase Realtime Database Active\n"
+                "• <b>1-Click Trading:</b> Active inside Telegram"
+            )
+            await notifier.send_message(reply)
+
+        elif text in ("/help", "/start", "help"):
+            reply = (
+                "🤖 <b>Telegram Trading Command Center</b>\n\n"
+                "• <code>/balance</code> - Check live Dhan margin & funds\n"
+                "• <code>/positions</code> - View open trades on Dhan\n"
+                "• <code>/orders</code> - Check today's Dhan orders\n"
+                "• <code>/status</code> - Scanner & ML engine health\n\n"
+                "<i>When an ORB breakout occurs, 1-click Buy/Sell buttons will appear right here!</i>"
+            )
+            await notifier.send_message(reply)
 
     async def _handle_callback(self, cb_query: Dict[str, Any]):
         """Processes user tapping Approve (Whole Lot Price) or Reject."""
