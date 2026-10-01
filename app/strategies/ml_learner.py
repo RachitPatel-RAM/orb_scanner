@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import logger
@@ -139,14 +140,18 @@ class MLLearner:
         score = 50.0  # Base prior
         reasons = []
 
-        # 1. Candlestick Anatomy
-        if feats.is_strong_body:
+        # 1. Candlestick Anatomy & Contextual Outlier Detection (Unit 4)
+        opp_wick = feats.upper_wick_ratio if direction == Direction.LONG else feats.lower_wick_ratio
+        if opp_wick > 0.40:
+            score -= 35.0
+            reasons.append(f"Contextual Outlier Trap ({opp_wick*100:.0f}% counter wick)")
+        elif feats.is_strong_body:
             score += 20.0
             reasons.append("Strong Candle Body (>60% range)")
         if feats.body_ratio >= 0.75:
             score += 15.0
             reasons.append("Marubozu Institutional Conviction")
-        if feats.has_rejection_wick:
+        if feats.has_rejection_wick and opp_wick <= 0.40:
             score -= 25.0
             reasons.append("Counter-trend Rejection Wick Detected")
 
@@ -170,8 +175,8 @@ class MLLearner:
                 score += 10.0
                 reasons.append("Optimal Range Width (Tight base)")
             elif width_pct > 3.5:
-                score -= 15.0
-                reasons.append(f"Over-extended Range ({width_pct:.1f}%)")
+                score -= 20.0
+                reasons.append(f"Over-extended Range Outlier ({width_pct:.1f}%)")
 
         # 4. Timing
         c_time = candle.timestamp.time()
@@ -238,6 +243,7 @@ class MLLearner:
         """
         Runs after market close:
         Analyzes today's executed trades, updates stock follow-through stats,
+        evaluates Confusion Matrix Precision, applies AdaBoost mistake prevention,
         and saves updated weights and rankings to Firebase.
         """
         if not trades:
@@ -245,9 +251,12 @@ class MLLearner:
 
         wins = [t for t in trades if t.pnl > 0]
         losses = [t for t in trades if t.pnl < 0]
-        win_rate = (len(wins) / len(trades)) * 100.0 if trades else 0.0
+        tp = len(wins)
+        fp = len(losses)
+        precision = (tp / (tp + fp) * 100.0) if (tp + fp) > 0 else 0.0
+        error_rate = (fp / (tp + fp) * 100.0) if (tp + fp) > 0 else 0.0
 
-        # Update stock history
+        # Update stock history & recency decay models in SQLite
         stock_stats: Dict[str, Dict[str, Any]] = {}
         for t in trades:
             sym = t.symbol
@@ -257,6 +266,35 @@ class MLLearner:
             if t.pnl > 0:
                 stock_stats[sym]["wins"] += 1
             stock_stats[sym]["pnl"] += t.pnl
+
+        # Persist updated stock performance into SQLite with recency decay
+        for sym, d in stock_stats.items():
+            trade_cnt = d["trades"]
+            win_cnt = d["wins"]
+            today_wr = (win_cnt / trade_cnt * 100.0) if trade_cnt > 0 else 0.0
+            today_trap = (100.0 - today_wr) if today_wr < 50.0 else 0.0
+            existing = db.get_stock_learned_model(sym)
+            sec_id = existing.get("security_id", "") if existing else ""
+            db.save_stock_learned_model(
+                symbol=sym,
+                security_id=sec_id,
+                win_rate=today_wr,
+                high_vol_win_rate=today_wr,
+                trap_rate=today_trap,
+                sessions_analyzed=trade_cnt,
+            )
+
+        # AdaBoost-inspired Mistake Adaptation (Unit 3):
+        # If losses exceeded wins, immediately penalize the failure conditions to prevent repeat mistakes
+        if fp > tp:
+            self.weights["rejection_penalty"] = max(-40.0, self.weights.get("rejection_penalty", -25.0) - 2.5)
+            self.weights["volume_surge_weight"] = min(40.0, self.weights.get("volume_surge_weight", 30.0) + 2.0)
+            logger.info(
+                f"AdaBoost Adaptation: Increased rejection penalty to {self.weights['rejection_penalty']} "
+                f"to prevent repeating false breakout mistakes (Precision: {precision:.1f}%)."
+            )
+        elif tp > fp:
+            self.weights["body_ratio_weight"] = min(40.0, self.weights.get("body_ratio_weight", 35.0) + 1.0)
 
         # Rank stocks
         rankings = []
@@ -275,10 +313,15 @@ class MLLearner:
         await firebase_sync.save_stock_rankings(rankings)
         await firebase_sync.save_model_weights(self.weights)
 
-        logger.info(f"Daily ML self-learning complete: {len(trades)} trades processed. Weights synced to Firebase.")
+        logger.info(
+            f"Daily ML self-learning complete: {len(trades)} trades processed. "
+            f"Precision: {precision:.1f}%, Error Rate: {error_rate:.1f}%. Weights synced to Firebase."
+        )
         return {
             "total_trades": len(trades),
-            "win_rate": round(win_rate, 1),
+            "win_rate": round(precision, 1),
+            "precision": round(precision, 1),
+            "error_rate": round(error_rate, 1),
             "top_stocks": rankings[:5],
         }
 

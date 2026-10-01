@@ -170,18 +170,20 @@ class HistoricalLearner:
     async def run_historical_learning_cycle(
         self,
         symbols: Optional[List[str]] = None,
-        max_symbols: int = 15,
+        max_symbols: int = 25,
     ) -> Dict[str, Any]:
         """
         Runs the full 5-year empirical learning cycle across key universe stocks.
         Aggregates genuine statistics and updates ML model conviction weights.
         """
         if not symbols:
-            # High liquidity F&O core scrips
+            # High liquidity F&O core scrips covering all major sectors
             symbols = [
                 "RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "TATASTEEL",
                 "INFY", "TCS", "BHARTIARTL", "AXISBANK", "LT",
-                "M&M", "MARUTI", "KOTAKBANK", "JSWSTEEL", "HINDALCO"
+                "M&M", "MARUTI", "KOTAKBANK", "JSWSTEEL", "HINDALCO",
+                "ITC", "BAJFINANCE", "TITAN", "NTPC", "ONGC",
+                "POWERGRID", "TATAMOTORS", "COALINDIA", "SUNPHARMA", "ADANIENT"
             ][:max_symbols]
 
         if not instrument_manager.sec_id_to_symbol:

@@ -112,10 +112,11 @@ class LiveEngine:
                     orb_high=sig.orb_high,
                     orb_low=sig.orb_low,
                 )
-                if ai_eval.score < 40:
+                # Strict High-Probability Filter: only allow >= 65% conviction setups
+                if ai_eval.score < 65:
                     logger.warning(
-                        f"AI Prediction Filter: Blocked {sig.symbol} {sig.direction.value} breakout "
-                        f"(Conviction: {ai_eval.score}%, Reasons: {ai_eval.reasons}). Trade filtered."
+                        f"AI High-Probability Filter: Blocked {sig.symbol} {sig.direction.value} breakout "
+                        f"(Conviction: {ai_eval.score}%, Reasons: {ai_eval.reasons}). Only high-probability (>=65%) allowed."
                     )
                     return
             except Exception as e:
@@ -395,8 +396,8 @@ class LiveEngine:
                     except Exception as e:
                         logger.debug(f"Continuous background learning error: {e}")
 
-                # Run every 3 hours during off-market hours and holidays
-                await asyncio.sleep(3 * 3600)
+                # Continuous hourly learning 24/7 (every 1 hour during off-market hours and holidays)
+                await asyncio.sleep(3600)
 
         learner_task = asyncio.create_task(_continuous_historical_learner_loop())
 
