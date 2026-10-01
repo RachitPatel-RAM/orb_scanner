@@ -360,18 +360,24 @@ class LiveEngine:
         # Continuous background 5-year empirical learning loop (never sits idle/silent)
         async def _continuous_historical_learner_loop():
             from app.strategies.historical_learner import historical_learner
+            # Fast initial pass 20 seconds after startup if market is closed or holiday
+            await asyncio.sleep(20)
             while self._running:
-                await asyncio.sleep(7200)  # Every 2 hours
-                if not self._running:
-                    break
                 now_t = default_session.now()
-                # Run learning pass outside active market hours
                 if not default_session.is_market_open(now_t):
                     try:
                         logger.info("Continuous background 5-year historical learning pass running...")
-                        await historical_learner.run_historical_learning_cycle()
+                        res = await historical_learner.run_historical_learning_cycle()
+                        if res:
+                            report_text = historical_learner.format_offmarket_learning_report(res)
+                            idemp = f"OFFMARKET_LEARN_{now_t.strftime('%Y%m%d_%H')}"
+                            await notifier.send_message(report_text, idempotency_key=idemp)
+                            logger.info("Dispatched off-market AI learning update to Telegram.")
                     except Exception as e:
                         logger.debug(f"Continuous background learning error: {e}")
+
+                # Run every 3 hours during off-market hours and holidays
+                await asyncio.sleep(3 * 3600)
 
         learner_task = asyncio.create_task(_continuous_historical_learner_loop())
 
