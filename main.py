@@ -226,6 +226,28 @@ class LiveEngine:
 
                 logger.info(f"Generating Daily Market Summary: {summary_data}")
                 await notifier.send_daily_summary(summary_data)
+
+                # ML Candlestick Self-Learning & Firebase Cloud Sync
+                try:
+                    from app.strategies.ml_learner import ml_learner
+                    from app.storage.firebase_sync import firebase_sync
+
+                    closed_trades = self.paper_tracker.get_closed_trades()
+                    learning_res = await ml_learner.update_daily_learning(closed_trades)
+                    await firebase_sync.save_daily_report(today_str, summary_data)
+
+                    # Send Daily AI Learning & Recommendation Alert to Telegram
+                    tested_period = f"From: {today_str} 09:15 IST\nTo:   {today_str} 15:30 IST"
+                    top_picks = learning_res.get("top_stocks", [])
+                    await notifier.send_ai_learning_report(
+                        date_str=today_str,
+                        tested_period=tested_period,
+                        learning_summary=learning_res,
+                        top_recommendations=top_picks,
+                    )
+                except Exception as ml_err:
+                    logger.error(f"Error during EOD ML learning: {ml_err}")
+
                 self._daily_summary_sent = True
 
     async def run(
