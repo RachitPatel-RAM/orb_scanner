@@ -9,6 +9,7 @@ and updates Telegram messages in real-time.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 import httpx
@@ -40,10 +41,19 @@ class DhanOrderExecutor:
 
     def register_signal_for_approval(self, signal: Signal) -> Tuple[Dict[str, Any], int, float]:
         """
-        Calculates whole lot price and returns the inline keyboard markup for Telegram.
+        Calculates quantity and required margin fitting user's capital (₹4,322 with 5x Intraday Margin).
         """
-        lot_size = instrument_manager.get_lot_size(signal.security_id)
-        total_lot_price = round(signal.entry_price * lot_size, 2)
+        from app.storage.database import db
+        default_cap = float(os.getenv("TRADING_CAPITAL", "4322.0"))
+        capital = db.get_account_balance(default_cap)
+        # 5x intraday MIS margin on NSE Equity
+        usable_capital = capital * 0.85  # keep safety buffer
+        max_exposure = usable_capital * 5.0
+
+        qty = max(1, int(max_exposure / signal.entry_price))
+        margin_req = round((signal.entry_price * qty) / 5.0, 2)
+        total_value = round(signal.entry_price * qty, 2)
+
         sig_key = f"{signal.security_id}_{int(signal.timestamp.timestamp())}"
 
         self._pending_orders[sig_key] = {
@@ -54,16 +64,17 @@ class DhanOrderExecutor:
             "entry_price": signal.entry_price,
             "stop_loss": signal.stop_loss,
             "target": signal.target,
-            "lot_size": lot_size,
-            "total_lot_price": total_lot_price,
+            "lot_size": qty,
+            "margin_req": margin_req,
+            "total_lot_price": total_value,
             "created_at": datetime.now(),
         }
 
-        # Format button with whole lot price as requested by user
+        # Format button with exact margin price fitting the user's capital
         if signal.direction == Direction.LONG:
-            btn_text = f"🟢 Buy 1 Lot (₹{total_lot_price:,.2f})"
+            btn_text = f"🟢 Buy {qty} Qty (₹{margin_req:,.0f})"
         else:
-            btn_text = f"🔴 Sell 1 Lot (₹{total_lot_price:,.2f})"
+            btn_text = f"🔴 Sell {qty} Qty (₹{margin_req:,.0f})"
 
         reply_markup = {
             "inline_keyboard": [
@@ -74,7 +85,7 @@ class DhanOrderExecutor:
             ]
         }
 
-        return reply_markup, lot_size, total_lot_price
+        return reply_markup, qty, margin_req
 
     async def execute_dhan_order(self, order_data: Dict[str, Any]) -> Tuple[bool, str]:
         """

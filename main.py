@@ -224,29 +224,26 @@ class LiveEngine:
                     "win_rate": win_rate,
                 }
 
-                logger.info(f"Generating Daily Market Summary: {summary_data}")
-                await notifier.send_daily_summary(summary_data)
+                logger.info(f"Generating Market Close Summary & 5-Year Deep Learning: {summary_data}")
 
-                # ML Candlestick Self-Learning & Firebase Cloud Sync
+                # 5-Year Empirical Deep Learning & Multi-Year Statistical Calibration
                 try:
-                    from app.strategies.ml_learner import ml_learner
+                    from app.strategies.historical_learner import historical_learner
                     from app.storage.firebase_sync import firebase_sync
 
-                    closed_trades = self.paper_tracker.get_closed_trades()
-                    learning_res = await ml_learner.update_daily_learning(closed_trades)
-                    await firebase_sync.save_daily_report(today_str, summary_data)
+                    # Run multi-year learning cycle across universe on genuine Dhan historical bars
+                    historical_res = await historical_learner.run_historical_learning_cycle()
 
-                    # Send Daily AI Learning & Recommendation Alert to Telegram
-                    tested_period = f"From: {today_str} 09:15 IST\nTo:   {today_str} 15:30 IST"
-                    top_picks = learning_res.get("top_stocks", [])
-                    await notifier.send_ai_learning_report(
-                        date_str=today_str,
-                        tested_period=tested_period,
-                        learning_summary=learning_res,
-                        top_recommendations=top_picks,
+                    # Format clean EOD message without brand names, insights in quotes
+                    eod_msg = historical_learner.format_eod_report_message(
+                        daily_trades_summary=summary_data,
+                        learning_res=historical_res,
                     )
+                    await notifier.send_message(eod_msg, idempotency_key=f"{today_str}_EOD_SUMMARY")
+                    await firebase_sync.save_daily_report(today_str, summary_data)
                 except Exception as ml_err:
-                    logger.error(f"Error during EOD ML learning: {ml_err}")
+                    logger.error(f"Error during EOD historical learning: {ml_err}")
+                    await notifier.send_daily_summary(summary_data)
 
                 self._daily_summary_sent = True
 
@@ -528,6 +525,38 @@ async def cmd_renew() -> None:
     print("\n")
 
 
+async def cmd_learn(symbols: Optional[str] = None, max_stocks: int = 15) -> None:
+    """Runs 5-year historical empirical learning on Dhan data and generates strategy report."""
+    print("\n🧠 Running 5-Year Historical Deep Learning Cycle (DhanHQ API)...\n")
+    if not instrument_manager.is_cache_valid():
+        await instrument_manager.download_master()
+    instrument_manager.load_and_parse()
+
+    sym_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+
+    from app.strategies.historical_learner import historical_learner
+    res = await historical_learner.run_historical_learning_cycle(symbols=sym_list, max_symbols=max_stocks)
+
+    if not res:
+        print("  [FAIL] Could not complete learning cycle. Check Dhan credentials and network.")
+        return
+
+    print(f"  [OK] Analyzed {res.get('total_bars_examined', 0):,} real historical daily bars.")
+    print(f"  [OK] High-Volume Win Rate: {res.get('high_vol_win_rate', 0):.1f}% (Edge: +{res.get('vol_edge_pct', 0):.1f}%)")
+    print(f"  [OK] Top Momentum Stocks:")
+    for s in res.get("top_stocks", [])[:5]:
+        print(f"       - {s['symbol']}: {s['high_vol_win_rate']}% Win Rate ({s['sessions_analyzed']} bars)")
+
+    # Send report to Telegram
+    today_str = date.today().isoformat()
+    mock_summary = {"targets_hit": 0, "stops_hit": 0, "pnl": 0.0, "win_rate": res.get("high_vol_win_rate", 0.0)}
+    eod_msg = historical_learner.format_eod_report_message(daily_trades_summary=mock_summary, learning_res=res)
+    ok = await notifier.send_message(eod_msg, idempotency_key=f"{today_str}_CLI_LEARNING")
+    if ok:
+        print("  [OK] Dispatched clean strategy report to Telegram.")
+    print("\nLearning cycle completed successfully.\n")
+
+
 def cmd_status() -> None:
     """Displays current system status, database metrics, and open positions."""
     print("\n" + "=" * 55)
@@ -553,6 +582,7 @@ def cmd_status() -> None:
             c_trades = conn.execute("SELECT COUNT(*) as c FROM paper_trades").fetchone()["c"]
             c_open = conn.execute("SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'").fetchone()["c"]
 
+        balance = db.get_account_balance(4322.0)
         print("\nDatabase Record Counts:")
         print(f"  - Cached Instruments:   {c_inst}")
         print(f"  - 1-Minute Candles:     {c_1m}")
@@ -561,6 +591,7 @@ def cmd_status() -> None:
         print(f"  - Breakout Signals:     {c_sig}")
         print(f"  - Total Paper Trades:   {c_trades}")
         print(f"  - Active Open Trades:   {c_open}")
+        print(f"  - Compounded Balance:   Rs {balance:,.2f} (5x Margin Active)")
     except Exception as e:
         print(f"  [ERROR querying database: {e}]")
 
@@ -600,6 +631,11 @@ def main() -> None:
     bt_parser.add_argument("--compare", action="store_true", help="Compare 15m, 30m, and 60m timeframes")
     bt_parser.add_argument("--capital", type=float, default=5000.0, help="Simulated trading capital (default: 5000)")
 
+    # learn (5-year deep learning on genuine Dhan data)
+    learn_parser = subparsers.add_parser("learn", help="Run 5-year historical learning on Dhan data")
+    learn_parser.add_argument("--symbols", help="Specific symbols to analyze (comma-separated)")
+    learn_parser.add_argument("--max", type=int, default=15, help="Max stocks to analyze (default: 15)")
+
     # status
     subparsers.add_parser("status", help="Show system status and database statistics")
 
@@ -630,9 +666,12 @@ def main() -> None:
                 capital=args.capital,
             )
         )
+    elif args.command == "learn":
+        asyncio.run(cmd_learn(symbols=args.symbols, max_stocks=args.max))
     elif args.command == "status":
         cmd_status()
 
 
 if __name__ == "__main__":
     main()
+

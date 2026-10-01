@@ -62,6 +62,15 @@ class Database:
             );
             """)
 
+            # Key-Value Store for persistent settings and compounding account balance
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings_kv (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+
             # 1-minute Candles
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS candles_1m (
@@ -431,5 +440,50 @@ class Database:
                 VALUES (?, ?, ?)
             """, (event_type, message, json.dumps(details) if details else None))
 
+    def get_account_balance(self, default_capital: float = 4322.0) -> float:
+        """Retrieves persistent trading capital, defaulting to ₹4,322 if not set."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT value FROM settings_kv WHERE key = 'account_balance'").fetchone()
+            if row:
+                try:
+                    return float(row["value"])
+                except (ValueError, TypeError):
+                    pass
+            return default_capital
+
+    def update_account_balance(self, pnl: float, default_capital: float = 4322.0) -> float:
+        """Updates and compounds trading capital with realized trade PnL."""
+        current = self.get_account_balance(default_capital)
+        new_balance = round(current + pnl, 2)
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO settings_kv (key, value, updated_at)
+                VALUES ('account_balance', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """, (str(new_balance),))
+        logger.info(f"Compounded Trading Capital: ₹{current:.2f} -> ₹{new_balance:.2f} (PnL: {pnl:+.2f})")
+        return new_balance
+
+    def save_learned_state(self, state: Dict[str, Any]) -> None:
+        """Saves learned ML/statistical model state to key-value store."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO settings_kv (key, value, updated_at)
+                VALUES ('learned_model_state', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """, (json.dumps(state),))
+
+    def get_learned_state(self) -> Optional[Dict[str, Any]]:
+        """Retrieves learned ML/statistical model state from key-value store."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT value FROM settings_kv WHERE key = 'learned_model_state'").fetchone()
+            if row:
+                try:
+                    return json.loads(row["value"])
+                except Exception:
+                    pass
+        return None
+
 
 db = Database()
+

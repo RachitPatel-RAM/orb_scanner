@@ -29,20 +29,20 @@ def test_telegram_approval_button_displays_whole_lot_price():
         idempotency_key="2026-10-01_100_TEST",
     )
 
-    markup, lot_size, total_price = executor.register_signal_for_approval(signal)
+    markup, qty, margin_req = executor.register_signal_for_approval(signal)
 
-    # Validate lot calculation
-    assert lot_size >= 1
-    assert total_price == round(1000.0 * lot_size, 2)
+    # Validate quantity & margin calculation
+    assert qty >= 1
+    assert margin_req > 0
 
     # Validate Telegram inline keyboard buttons
     buttons = markup["inline_keyboard"][0]
     approve_button = buttons[0]
     reject_button = buttons[1]
 
-    # Verify button contains total price directly instead of generic "Approve" text
-    assert f"₹{total_price:,.2f}" in approve_button["text"]
-    assert "Buy 1 Lot" in approve_button["text"]
+    # Verify button contains exact qty and margin required
+    assert f"Buy {qty} Qty" in approve_button["text"]
+    assert f"₹{margin_req:,.0f}" in approve_button["text"]
     assert approve_button["callback_data"].startswith("app:")
 
     # Verify reject button
@@ -70,9 +70,9 @@ def test_short_signal_displays_sell_lot_price():
         idempotency_key="2026-10-01_100_SHORT_TEST",
     )
 
-    markup, lot_size, total_price = executor.register_signal_for_approval(signal)
+    markup, qty, margin_req = executor.register_signal_for_approval(signal)
     buttons = markup["inline_keyboard"][0]
     approve_button = buttons[0]
 
-    assert f"₹{total_price:,.2f}" in approve_button["text"]
-    assert "Sell 1 Lot" in approve_button["text"]
+    assert f"Sell {qty} Qty" in approve_button["text"]
+    assert f"₹{margin_req:,.0f}" in approve_button["text"]

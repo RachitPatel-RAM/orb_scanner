@@ -213,7 +213,7 @@ class TelegramNotifier:
         from app.strategies.gemini_analyzer import gemini_analyzer
         from app.strategies.groq_analyzer import groq_analyzer
 
-        reply_markup, lot_size, total_lot_price = order_executor.register_signal_for_approval(signal)
+        reply_markup, qty, margin_req = order_executor.register_signal_for_approval(signal)
 
         is_long = signal.direction == Direction.LONG
         header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
@@ -228,16 +228,12 @@ class TelegramNotifier:
                 orb_low=signal.orb_low,
             )
             ai_score = ai_eval.score
-            ai_pattern = ai_eval.pattern
-            ai_level = ai_eval.level
         else:
             ai_score = 78
-            ai_pattern = "Confirmed 15m Breakout"
-            ai_level = "HIGH_CONVICTION"
 
         stars = "⭐⭐⭐" if ai_score >= 70 else ("⭐⭐" if ai_score >= 50 else "⚠️")
 
-        # 2. Dual AI Ensemble: Groq (ultra-fast <250ms) + Gemini Deep Reasoning
+        # 2. Dual AI Ensemble Reasoning
         groq_task = groq_analyzer.analyze_breakout_fast(signal, candle)
         gemini_task = gemini_analyzer.analyze_breakout(signal, candle)
         groq_res, gemini_res = await asyncio.gather(groq_task, gemini_task, return_exceptions=True)
@@ -248,25 +244,20 @@ class TelegramNotifier:
         elif isinstance(groq_res, dict) and groq_res.get("reasoning"):
             ai_reason = groq_res["reasoning"]
 
+        clean_reason = ai_reason.replace('"', '').strip()
+
+        # Clean, simple alert without brand names, insight in quotes
         text = (
             f"{header}\n\n"
             f"<b>Stock:</b> {signal.symbol}\n"
-            f"<b>Exchange:</b> NSE\n"
             f"<b>Time:</b> {time_str} IST\n\n"
-            f"🧠 <b>AI Conviction:</b> <b>{ai_score}% {stars}</b> ({ai_level.replace('_', ' ')})\n"
-            f"🕯️ <b>Candle Pattern:</b> {ai_pattern}\n"
-            f"⚡ <b>AI Analysis (Groq + Gemini):</b> <i>\"{ai_reason}\"</i>\n\n"
+            f"<b>Conviction:</b> {ai_score}% {stars}\n"
+            f"\"{clean_reason}\"\n\n"
             f"<b>Entry:</b> ₹{signal.entry_price:,.2f}\n"
-            f"<b>ORB High:</b> ₹{signal.orb_high:,.2f}\n"
-            f"<b>ORB Low:</b> ₹{signal.orb_low:,.2f}\n"
             f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n"
-            f"<b>Target:</b> ₹{signal.target:,.2f}\n"
-            f"<b>Risk Reward:</b> 1:{signal.risk_reward:g}\n\n"
-            f"<b>Lot Size:</b> {lot_size} units\n"
-            f"<b>Total Lot Value:</b> ₹{total_lot_price:,.2f}\n\n"
-            f"<b>Confirmation:</b> {settings.strategy.signal_timeframe}-minute candle close\n"
-            f"<b>Strategy:</b> {signal.strategy}\n\n"
-            f"<i>Tap below to execute 1 lot with Target & Stop Loss attached:</i>"
+            f"<b>Target:</b> ₹{signal.target:,.2f} (1:{signal.risk_reward:g})\n\n"
+            f"<b>Quantity:</b> {qty} shares\n"
+            f"<b>Required Margin:</b> ₹{margin_req:,.2f}\n"
         )
         return await self.send_message(
             text,

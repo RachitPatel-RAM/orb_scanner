@@ -143,16 +143,13 @@ class GeminiAnalyzer:
         }
         await firebase_sync.save_daily_report(f"hourly_{now.strftime('%Y%m%d_%H%M')}", firebase_data)
 
-        # Telegram message format
+        # Telegram message format: clean, simple, in quotes without brand names
+        clean_summary = ai_summary.replace('"', '').strip()
         text = (
-            f"⏱️ <b>ORB HOURLY AI MARKET INTELLIGENCE ({hour_label} IST)</b>\n\n"
-            f"📊 <b>Real Market Data (Last 60 Minutes):</b>\n"
-            f"• Breakout Signals: {signals_count}\n"
-            f"• Trades Resolved: {total} ({len(wins)}🎯 / {len(losses)}🛑)\n"
-            f"• Hourly Win Rate: <b>{win_rate:.1f}%</b>\n\n"
-            f"🧠 <b>Gemini Deep Learning Insight:</b>\n"
-            f"<i>\"{ai_summary}\"</i>\n\n"
-            f"☁️ <b>Synced to Firebase:</b> <code>orbscanner-cb055</code>"
+            f"⏱️ <b>Market Update ({hour_label} IST)</b>\n\n"
+            f"• Signals: {signals_count} | Resolved: {total} ({len(wins)}🎯 / {len(losses)}🛑)\n"
+            f"• Win Rate: <b>{win_rate:.1f}%</b>\n\n"
+            f"\"{clean_summary}\""
         )
         return text
 
