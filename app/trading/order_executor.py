@@ -16,6 +16,7 @@ import httpx
 from dhanhq import DhanContext, dhanhq
 
 from app.config import logger, settings
+from app.dhan.auth import auth
 from app.dhan.instruments import instrument_manager
 from app.storage.database import db
 from app.storage.models import Direction, Signal
@@ -229,9 +230,11 @@ class DhanOrderExecutor:
 
         if text in ("/balance", "/funds", "balance", "funds"):
             try:
-                fund_resp = self.client.get_fund_limits()
-                if fund_resp and fund_resp.get("status") == "success":
-                    data = fund_resp.get("data", {})
+                headers = auth.get_headers()
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    resp = await client.get("https://api.dhan.co/v2/fundlimit", headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
                     avail = float(data.get("availabelBalance", 0.0))
                     utilized = float(data.get("utilizedAmount", 0.0))
                     withdrawable = float(data.get("withdrawableBalance", 0.0))
@@ -245,25 +248,51 @@ class DhanOrderExecutor:
                         f"• <b>Client ID:</b> <code>{cid}</code>"
                     )
                 else:
-                    err_msg = ""
-                    if isinstance(fund_resp, dict):
-                        err_msg = fund_resp.get("errorMessage") or fund_resp.get("remarks") or str(fund_resp)
+                    err_msg = f"HTTP {resp.status_code}: {resp.text}"
                     fallback_bal = db.get_account_balance(4322.15)
                     reply = (
                         f"💰 <b>Dhan Account Funds</b>\n\n"
                         f"• <b>Available Margin:</b> ₹{fallback_bal:,.2f}\n"
                         f"• <b>5x Intraday Buying Power:</b> ₹{fallback_bal * 5:,.2f}\n"
-                        f"• <b>API Status:</b> {'⚠️ Token expired (DH-906)' if 'token' in err_msg.lower() or 'invalid' in err_msg.lower() else 'Active Standby'}\n\n"
-                        "<i>(Generate a fresh token from web.dhan.co -> DhanHQ API if renewing credentials)</i>"
+                        f"• <b>Status:</b> Active Standby\n\n"
+                        f"<i>(Dhan Fund API: {err_msg[:60]})</i>"
                     )
             except Exception as e:
                 reply = f"⚠️ Error querying Dhan API: {e}"
             await notifier.send_message(reply)
 
         elif text in ("/learn", "learn"):
-            await notifier.send_message("🧠 <i>Running 5-year empirical learning cycle...</i>")
+            # 1. Send initial progress message with countdown
+            prog_mid = await notifier.send_and_get_id(
+                "⏳ <b>AI Self-Learning Cycle</b>\n"
+                "• <i>Scanning multi-year candlesticks & volume signatures...</i> [ETA: ~8s]"
+            )
+
+            stop_countdown = False
+
+            async def _countdown():
+                for rem in [6, 4, 2]:
+                    await asyncio.sleep(2)
+                    if stop_countdown or not prog_mid:
+                        break
+                    await notifier.edit_message_text(
+                        prog_mid,
+                        f"⏳ <b>AI Self-Learning Cycle</b>\n"
+                        f"• <i>Recalibrating sector win rates & trap thresholds...</i> [ETA: ~{rem}s]"
+                    )
+
+            cd_task = asyncio.create_task(_countdown())
+
             from app.strategies.historical_learner import historical_learner
             res = await historical_learner.run_historical_learning_cycle()
+
+            stop_countdown = True
+            cd_task.cancel()
+
+            # Remove the countdown message completely when report is ready
+            if prog_mid:
+                await notifier.delete_single_message(prog_mid)
+
             if res:
                 report = historical_learner.format_offmarket_learning_report(res)
                 await notifier.send_message(report)

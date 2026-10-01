@@ -173,6 +173,60 @@ class TelegramNotifier:
         logger.info(f"Cleaned up {deleted_count} old Telegram messages.")
         return deleted_count
 
+    async def send_and_get_id(self, text: str) -> Optional[int]:
+        """Sends a message and returns the integer message_id from Telegram API."""
+        if not self.is_configured:
+            return None
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("result", {}).get("message_id")
+        except Exception as e:
+            logger.debug(f"Error in send_and_get_id: {e}")
+        return None
+
+    async def edit_message_text(self, message_id: int, new_text: str) -> bool:
+        """Edits an existing Telegram message in-place."""
+        if not self.is_configured:
+            return False
+        url = f"https://api.telegram.org/bot{self.bot_token}/editMessageText"
+        payload = {
+            "chat_id": self.chat_id,
+            "message_id": message_id,
+            "text": new_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, json=payload)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"Error in edit_message_text: {e}")
+            return False
+
+    async def delete_single_message(self, message_id: int) -> bool:
+        """Deletes a specific message by its message_id."""
+        if not self.is_configured:
+            return False
+        url = f"https://api.telegram.org/bot{self.bot_token}/deleteMessage"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, json={"chat_id": self.chat_id, "message_id": message_id})
+                return resp.status_code in (200, 400)
+        except Exception as e:
+            logger.debug(f"Error deleting message {message_id}: {e}")
+            return False
+
     def send_message_sync(self, text: str, idempotency_key: Optional[str] = None) -> bool:
         """Synchronous helper for non-async contexts."""
         try:
