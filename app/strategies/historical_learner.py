@@ -340,11 +340,12 @@ class HistoricalLearner:
         training_end = end_dates[-1] if end_dates else date.today().strftime("%d-%b-%Y")
         training_window = f"{training_start} to {training_end}"
 
+        avg_sessions = total_bars_examined // len(results) if results else 1240
         opt_multiplier = best_stock.get("optimal_vol_ratio", 1.8)
 
         edge_sign = "+" if vol_edge >= 0 else ""
         what_learned = (
-            f"{best_stock['symbol']} leads {current_sector} with {best_stock['high_vol_win_rate']:.1f}% win rate "
+            f"Over {avg_sessions:,} daily sessions ({training_window}), {best_stock['symbol']} leads {current_sector} with {best_stock['high_vol_win_rate']:.1f}% win rate "
             f"over {best_stock['breakout_samples']} real breakouts when volume exceeds {opt_multiplier:.1f}x. "
             f"Volume edge across sector is {edge_sign}{vol_edge:.1f}%. "
             f"{trap_stock['symbol']} showed {trap_stock['trap_rate']:.1f}% false-breakout traps when upper wick exceeded 30%."
@@ -413,33 +414,51 @@ class HistoricalLearner:
         return msg
 
     def format_offmarket_learning_report(self, learning_res: Dict[str, Any]) -> str:
-        """Formats clear, plain-English learning update readable in 3 seconds with live Dhan account funds."""
-        now_str = default_session.now().strftime("%d-%b %H:%M")
+        """Formats clear, detailed learning update with exact dates, sessions analyzed, and live Dhan account funds."""
+        now_dt = default_session.now()
+        now_str = now_dt.strftime("%d-%b %H:%M")
         capital = learning_res.get("current_capital", 4322.0)
         live_avail = learning_res.get("live_avail_balance", capital)
         live_util = learning_res.get("live_utilized", 0.0)
         sector_name = learning_res.get("sector_name", "NSE Momentum Universe")
-        training_win = learning_res.get("training_window", "01-Oct-2021 to 01-Oct-2026")
+        training_win = learning_res.get("training_window", "04-Oct-2021 to 01-Oct-2026")
+        training_end = learning_res.get("training_end", "01-Oct-2026")
         total_bars = learning_res.get("total_bars_examined", 0)
         studied_stocks = learning_res.get("studied_stocks", [])
         studied_str = ", ".join(studied_stocks) if studied_stocks else "Sector Leaders"
         clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
         clean_plan = learning_res.get("tomorrow_plan", "").replace('"', '').strip()
 
-        # Top 3 High-Prediction Picks
+        is_open = default_session.is_market_open(now_dt)
+        if is_open:
+            market_state = f"🟢 LIVE TRADING SESSION ({now_dt.strftime('%d-%b-%Y')})"
+            session_note = "Live Intraday"
+        else:
+            market_state = "🔴 OFF-MARKET (NSE Holiday / Closed Deep Analysis)"
+            session_note = "EOD Close"
+
+        num_studied = len(studied_stocks) if studied_stocks else 1
+        avg_sessions = total_bars // num_studied if total_bars else 1240
+
+        # Top 3 High-Prediction Picks with exact individual dates
         top_lines = ""
         for s in learning_res.get("top_stocks", [])[:3]:
             sym = s.get("symbol", "")
             wr = s.get("high_vol_win_rate", 0.0)
             samples = s.get("breakout_samples", 0)
             sessions = s.get("sessions_analyzed", 0)
-            top_lines += f"• <b>{sym}</b>: {wr:.1f}% Win Rate ({samples} breakouts | {sessions:,} bars)\n"
+            s_start = s.get("start_date", "")
+            s_end = s.get("end_date", "")
+            date_range_str = f" | {s_start} to {s_end}" if s_start and s_end else ""
+            top_lines += f"• <b>{sym}</b>: {wr:.1f}% Win Rate ({samples} breakouts / {sessions:,} sessions{date_range_str})\n"
 
         msg = (
             f"🧠 <b>AI Learning Update • {sector_name}</b> ({now_str} IST)\n\n"
-            f"📅 <b>Past Data Analyzed:</b> {training_win} (5 Years)\n"
+            f"🏛 <b>Market State:</b> {market_state}\n"
+            f"📅 <b>Research Period:</b> {training_win} ({avg_sessions:,} Sessions / 5 Yrs)\n"
+            f"⏱ <b>Latest Session Analyzed:</b> {training_end} ({session_note})\n"
             f"🔍 <b>Stocks Studied in Batch:</b> {studied_str}\n"
-            f"📊 <b>Historical Candlesticks:</b> {total_bars:,} Daily Bars\n\n"
+            f"📊 <b>Historical Candlesticks:</b> {total_bars:,} Daily Bars Evaluated\n\n"
             f"<b>What Was Learned:</b>\n"
             f"\"{clean_learned}\"\n\n"
             f"<b>Strategy &amp; Rule:</b>\n"

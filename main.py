@@ -377,27 +377,26 @@ class LiveEngine:
 
         hourly_task = asyncio.create_task(_hourly_intelligence_loop())
 
-        # Continuous background 5-year empirical learning loop (never sits idle/silent)
+        # Continuous background 5-year empirical learning loop (runs every 30 minutes 24/7)
         async def _continuous_historical_learner_loop():
             from app.strategies.historical_learner import historical_learner
             # Fast initial pass 20 seconds after startup if market is closed or holiday
             await asyncio.sleep(20)
             while self._running:
                 now_t = default_session.now()
-                if not default_session.is_market_open(now_t):
-                    try:
-                        logger.info("Continuous background 5-year historical learning pass running...")
-                        res = await historical_learner.run_historical_learning_cycle()
-                        if res:
-                            report_text = historical_learner.format_offmarket_learning_report(res)
-                            idemp = f"OFFMARKET_LEARN_{now_t.strftime('%Y%m%d_%H')}"
-                            await notifier.send_message(report_text, idempotency_key=idemp)
-                            logger.info("Dispatched off-market AI learning update to Telegram.")
-                    except Exception as e:
-                        logger.debug(f"Continuous background learning error: {e}")
+                try:
+                    logger.info("Continuous background 5-year historical learning pass running (30m interval)...")
+                    res = await historical_learner.run_historical_learning_cycle()
+                    if res:
+                        report_text = historical_learner.format_offmarket_learning_report(res)
+                        idemp = f"OFFMARKET_LEARN_{now_t.strftime('%Y%m%d_%H%M')}"
+                        await notifier.send_message(report_text, idempotency_key=idemp)
+                        logger.info("Dispatched 30-min AI learning update to Telegram.")
+                except Exception as e:
+                    logger.debug(f"Continuous background learning error: {e}")
 
-                # Continuous hourly learning 24/7 (every 1 hour during off-market hours and holidays)
-                await asyncio.sleep(3600)
+                # Continuous learning every 30 minutes (1800 seconds)
+                await asyncio.sleep(1800)
 
         learner_task = asyncio.create_task(_continuous_historical_learner_loop())
 
