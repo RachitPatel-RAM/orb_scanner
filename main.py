@@ -206,9 +206,16 @@ class LiveEngine:
             # Flush any unclosed candles
             self.candle_builder.flush_stale_candles(now)
 
-            # Check if market has closed and summary not yet sent
-            if now.time() >= default_session.market_close_time and not self._daily_summary_sent:
-                today_str = now.date().isoformat()
+            # Check if market has closed and summary not yet sent (STRICTLY on active trading days)
+            today_str = now.date().isoformat()
+            if getattr(self, "_last_summary_date", None) != today_str:
+                self._daily_summary_sent = False
+
+            if (
+                default_session.is_trading_day(now.date())
+                and now.time() >= default_session.market_close_time
+                and not self._daily_summary_sent
+            ):
                 with db.get_connection() as conn:
                     # Signals summary
                     sig_rows = conn.execute(
@@ -266,6 +273,7 @@ class LiveEngine:
                     await notifier.send_daily_summary(summary_data)
 
                 self._daily_summary_sent = True
+                self._last_summary_date = today_str
 
     async def run(
         self,
@@ -377,26 +385,28 @@ class LiveEngine:
 
         hourly_task = asyncio.create_task(_hourly_intelligence_loop())
 
-        # Continuous background 5-year empirical learning loop (runs every 30 minutes 24/7)
+        # Continuous background 5-year empirical learning loop (runs every 2 hours off-market)
         async def _continuous_historical_learner_loop():
             from app.strategies.historical_learner import historical_learner
             # Fast initial pass 20 seconds after startup if market is closed or holiday
             await asyncio.sleep(20)
             while self._running:
                 now_t = default_session.now()
+                is_open = default_session.is_market_open(now_t)
                 try:
-                    logger.info("Continuous background 5-year historical learning pass running (30m interval)...")
+                    # In background, continuously train and calibrate ML conviction models across sectors
                     res = await historical_learner.run_historical_learning_cycle()
-                    if res:
+                    # Broadcast off-market reports only when market is closed/holiday
+                    if res and not is_open:
                         report_text = historical_learner.format_offmarket_learning_report(res)
                         idemp = f"OFFMARKET_LEARN_{now_t.strftime('%Y%m%d_%H%M')}"
                         await notifier.send_message(report_text, idempotency_key=idemp)
-                        logger.info("Dispatched 30-min AI learning update to Telegram.")
+                        logger.info("Dispatched multi-year AI learning update to Telegram.")
                 except Exception as e:
                     logger.debug(f"Continuous background learning error: {e}")
 
-                # Continuous learning every 30 minutes (1800 seconds)
-                await asyncio.sleep(1800)
+                # Off-market learning cycle throttle: 2 hours (7200 seconds) to avoid spamming
+                await asyncio.sleep(7200)
 
         learner_task = asyncio.create_task(_continuous_historical_learner_loop())
 

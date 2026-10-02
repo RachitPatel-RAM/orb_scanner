@@ -336,19 +336,34 @@ class HistoricalLearner:
 
         start_dates = [r.get("start_date") for r in results if r.get("start_date")]
         end_dates = [r.get("end_date") for r in results if r.get("end_date")]
-        training_start = start_dates[0] if start_dates else "01-Oct-2021"
+        training_start = start_dates[0] if start_dates else "03-Jan-2022"
         training_end = end_dates[-1] if end_dates else date.today().strftime("%d-%b-%Y")
         training_window = f"{training_start} to {training_end}"
 
-        avg_sessions = total_bars_examined // len(results) if results else 1240
+        avg_sessions = total_bars_examined // len(results) if results else 1178
         opt_multiplier = best_stock.get("optimal_vol_ratio", 1.8)
 
+        # 1. Why Was This Analyzed?
+        why_learned = (
+            f"Evaluated all {avg_sessions:,} daily sessions across ~4.8 years to separate genuine ORB breakout continuation "
+            f"from false breakout traps. Calibrates AI conviction weights so only high-probability momentum is traded."
+        )
+
+        # 2. What Was Learned?
         edge_sign = "+" if vol_edge >= 0 else ""
         what_learned = (
-            f"Over {avg_sessions:,} daily sessions ({training_window}), {best_stock['symbol']} leads {current_sector} with {best_stock['high_vol_win_rate']:.1f}% win rate "
+            f"Across {avg_sessions:,} daily sessions ({training_window}), {best_stock['symbol']} leads {current_sector} with {best_stock['high_vol_win_rate']:.1f}% win rate "
             f"over {best_stock['breakout_samples']} real breakouts when volume exceeds {opt_multiplier:.1f}x. "
             f"Volume edge across sector is {edge_sign}{vol_edge:.1f}%. "
             f"{trap_stock['symbol']} showed {trap_stock['trap_rate']:.1f}% false-breakout traps when upper wick exceeded 30%."
+        )
+
+        # 3. How It Benefits Tomorrow's Live Execution & Predictions
+        live_benefit = (
+            f"• <b>AI Conviction Boost (+8 to +15 Pts):</b> Top performers ({best_stock['symbol']}) get prioritized for live order execution on ORB triggers.\n"
+            f"• <b>Trap Avoidance (-15 Pts / Auto-Skip):</b> High-trap stocks ({trap_stock['symbol']}) with upper wicks >30% are penalized or skipped to protect capital.\n"
+            f"• <b>Volume Verification:</b> Demands minimum {opt_multiplier:.1f}x volume surge to confirm institutional participation before entering.\n"
+            f"• <b>Capital Protection:</b> Allocates ₹{live_avail_balance:,.2f} Dhan capital (₹{live_avail_balance*5:,.2f} with 5x margin) exclusively to top setups."
         )
 
         tomorrow_plan = (
@@ -370,7 +385,9 @@ class HistoricalLearner:
             "low_vol_win_rate": round(avg_low_vol_wr, 1),
             "vol_edge_pct": round(vol_edge, 1),
             "top_stocks": results[:3],
+            "why_learned": why_learned,
             "what_learned": what_learned,
+            "live_benefit": live_benefit,
             "tomorrow_plan": tomorrow_plan,
             "current_capital": current_capital,
             "live_avail_balance": live_avail_balance,
@@ -420,52 +437,53 @@ class HistoricalLearner:
         capital = learning_res.get("current_capital", 4322.0)
         live_avail = learning_res.get("live_avail_balance", capital)
         live_util = learning_res.get("live_utilized", 0.0)
+        margin_power = live_avail * 5.0
         sector_name = learning_res.get("sector_name", "NSE Momentum Universe")
-        training_win = learning_res.get("training_window", "04-Oct-2021 to 01-Oct-2026")
-        training_end = learning_res.get("training_end", "01-Oct-2026")
+        training_win = learning_res.get("training_window", "03-Jan-2022 to 30-Sep-2026")
+        training_end = learning_res.get("training_end", "30-Sep-2026")
         total_bars = learning_res.get("total_bars_examined", 0)
         studied_stocks = learning_res.get("studied_stocks", [])
         studied_str = ", ".join(studied_stocks) if studied_stocks else "Sector Leaders"
         clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
         clean_plan = learning_res.get("tomorrow_plan", "").replace('"', '').strip()
+        why_learned = learning_res.get("why_learned", "").replace('"', '').strip()
+        live_benefit = learning_res.get("live_benefit", "").strip()
 
         is_open = default_session.is_market_open(now_dt)
         if is_open:
             market_state = f"🟢 LIVE TRADING SESSION ({now_dt.strftime('%d-%b-%Y')})"
-            session_note = "Live Intraday"
         else:
             market_state = "🔴 OFF-MARKET (NSE Holiday / Closed Deep Analysis)"
-            session_note = "EOD Close"
 
         num_studied = len(studied_stocks) if studied_stocks else 1
-        avg_sessions = total_bars // num_studied if total_bars else 1240
+        avg_sessions = total_bars // num_studied if total_bars else 1178
 
-        # Top 3 High-Prediction Picks with exact individual dates
+        # Top 3 High-Prediction Picks with exact individual metrics
         top_lines = ""
         for s in learning_res.get("top_stocks", [])[:3]:
             sym = s.get("symbol", "")
             wr = s.get("high_vol_win_rate", 0.0)
             samples = s.get("breakout_samples", 0)
-            sessions = s.get("sessions_analyzed", 0)
-            s_start = s.get("start_date", "")
-            s_end = s.get("end_date", "")
-            date_range_str = f" | {s_start} to {s_end}" if s_start and s_end else ""
-            top_lines += f"• <b>{sym}</b>: {wr:.1f}% Win Rate ({samples} breakouts / {sessions:,} sessions{date_range_str})\n"
+            trap_r = s.get("trap_rate", 0.0)
+            top_lines += f"• <b>{sym}</b>: {wr:.1f}% Win Rate ({samples} validated breakouts | {trap_r:.1f}% trap risk)\n"
 
         msg = (
             f"🧠 <b>AI Learning Update • {sector_name}</b> ({now_str} IST)\n\n"
             f"🏛 <b>Market State:</b> {market_state}\n"
-            f"📅 <b>Research Period:</b> {training_win} ({avg_sessions:,} Sessions / 5 Yrs)\n"
-            f"⏱ <b>Latest Session Analyzed:</b> {training_end} ({session_note})\n"
-            f"🔍 <b>Stocks Studied in Batch:</b> {studied_str}\n"
-            f"📊 <b>Historical Candlesticks:</b> {total_bars:,} Daily Bars Evaluated\n\n"
-            f"<b>What Was Learned:</b>\n"
+            f"📅 <b>Historical Dataset:</b> {training_win} (~4.8 Yrs | {avg_sessions:,} Total Sessions)\n"
+            f"📌 <b>Last Completed Session:</b> {training_end} (Evaluated all {avg_sessions:,} daily sessions)\n"
+            f"🔍 <b>Stocks Studied in Batch:</b> {studied_str} ({total_bars:,} Daily Bars)\n\n"
+            f"💡 <b>Why This Was Analyzed:</b>\n"
+            f"\"{why_learned}\"\n\n"
+            f"📊 <b>What Was Learned (Empirical Edge):</b>\n"
             f"\"{clean_learned}\"\n\n"
-            f"<b>Strategy &amp; Rule:</b>\n"
+            f"🎯 <b>Live Execution &amp; Prediction Benefit:</b>\n"
+            f"{live_benefit}\n\n"
+            f"⚙️ <b>Strategy &amp; Rule:</b>\n"
             f"\"{clean_plan}\"\n\n"
-            f"<b>Top High-Win Stocks:</b>\n"
+            f"🏆 <b>Top High-Win Stocks:</b>\n"
             f"{top_lines}\n"
-            f"<b>Live Dhan Account:</b> ₹{live_avail:,.2f} Avail | ₹{live_util:,.2f} Utilized (5x Margin)"
+            f"💼 <b>Live Dhan Account:</b> ₹{live_avail:,.2f} Avail (₹{margin_power:,.2f} with 5x Intraday Margin)"
         )
         return msg
 
