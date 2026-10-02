@@ -344,7 +344,7 @@ class HistoricalLearner:
 
         edge_sign = "+" if vol_edge >= 0 else ""
         what_learned = (
-            f"5-Year data ({training_window}): {best_stock['symbol']} leads {current_sector} with {best_stock['high_vol_win_rate']:.1f}% win rate "
+            f"{best_stock['symbol']} leads {current_sector} with {best_stock['high_vol_win_rate']:.1f}% win rate "
             f"over {best_stock['breakout_samples']} real breakouts when volume exceeds {opt_multiplier:.1f}x. "
             f"Volume edge across sector is {edge_sign}{vol_edge:.1f}%. "
             f"{trap_stock['symbol']} showed {trap_stock['trap_rate']:.1f}% false-breakout traps when upper wick exceeded 30%."
@@ -363,6 +363,7 @@ class HistoricalLearner:
             "training_start": training_start,
             "training_end": training_end,
             "total_bars_examined": total_bars_examined,
+            "studied_stocks": [r["symbol"] for r in results],
             "average_win_rate": round(avg_wr, 1),
             "high_vol_win_rate": round(avg_high_vol_wr, 1),
             "low_vol_win_rate": round(avg_low_vol_wr, 1),
@@ -420,6 +421,8 @@ class HistoricalLearner:
         sector_name = learning_res.get("sector_name", "NSE Momentum Universe")
         training_win = learning_res.get("training_window", "01-Oct-2021 to 01-Oct-2026")
         total_bars = learning_res.get("total_bars_examined", 0)
+        studied_stocks = learning_res.get("studied_stocks", [])
+        studied_str = ", ".join(studied_stocks) if studied_stocks else "Sector Leaders"
         clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
         clean_plan = learning_res.get("tomorrow_plan", "").replace('"', '').strip()
 
@@ -434,8 +437,9 @@ class HistoricalLearner:
 
         msg = (
             f"🧠 <b>AI Learning Update • {sector_name}</b> ({now_str} IST)\n\n"
-            f"📅 <b>5-Year Training Period:</b> {training_win}\n"
-            f"📊 <b>Historical Dataset:</b> {total_bars:,} Daily OHLCV Bars\n\n"
+            f"📅 <b>Past Data Analyzed:</b> {training_win} (5 Years)\n"
+            f"🔍 <b>Stocks Studied in Batch:</b> {studied_str}\n"
+            f"📊 <b>Historical Candlesticks:</b> {total_bars:,} Daily Bars\n\n"
             f"<b>What Was Learned:</b>\n"
             f"\"{clean_learned}\"\n\n"
             f"<b>Strategy &amp; Rule:</b>\n"
