@@ -405,8 +405,8 @@ class LiveEngine:
                 except Exception as e:
                     logger.debug(f"Continuous background learning error: {e}")
 
-                # Off-market learning cycle throttle: 2 hours (7200 seconds) to avoid spamming
-                await asyncio.sleep(7200)
+                # Off-market learning cycle interval: 30 minutes (1800 seconds)
+                await asyncio.sleep(1800)
 
         learner_task = asyncio.create_task(_continuous_historical_learner_loop())
 
