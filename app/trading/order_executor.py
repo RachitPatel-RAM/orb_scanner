@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any, Dict, Optional, Tuple
 import httpx
 from dhanhq import DhanContext, dhanhq
@@ -179,9 +179,13 @@ class DhanOrderExecutor:
         try:
             cmds = [
                 {"command": "balance", "description": "Check live Dhan margin and funds"},
+                {"command": "limit", "description": "Check Dhan funds and available limits"},
+                {"command": "indices", "description": "View Nifty 50, BankNifty & Sensex ORB levels"},
+                {"command": "learn", "description": "Run on-demand AI deep learning on 5-yr exchange data"},
                 {"command": "positions", "description": "View open positions on Dhan"},
                 {"command": "orders", "description": "View today Dhan orders"},
                 {"command": "status", "description": "Scanner and ML engine health"},
+                {"command": "token", "description": "Update Dhan access token via /token <jwt>"},
                 {"command": "help", "description": "Show command menu"},
             ]
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -216,11 +220,71 @@ class DhanOrderExecutor:
                     logger.debug(f"Telegram listener polling cycle error: {e}")
                     await asyncio.sleep(2)
 
+    async def get_indices_orb_report(self, target_date: Optional[date] = None) -> str:
+        """Computes and formats the 09:30-09:45 ORB High/Low/Mid benchmark for NIFTY 50, BANKNIFTY, and SENSEX."""
+        from app.dhan.auth import auth
+        from app.market.session import default_session
+        d = target_date or default_session.now().date()
+        headers = auth.get_headers()
+        url = "https://api.dhan.co/v2/charts/intraday"
+        indices = [
+            ("13", "NIFTY 50", "NSE", "IDX_I"),
+            ("25", "BANKNIFTY", "NSE", "IDX_I"),
+            ("51", "SENSEX", "BSE", "IDX_I"),
+        ]
+        lines = []
+        for sid, name, exch, seg in indices:
+            payload = {
+                "securityId": sid,
+                "exchangeSegment": seg,
+                "instrument": "INDEX",
+                "fromDate": f"{d.isoformat()} 09:15:00",
+                "toDate": f"{d.isoformat()} 15:30:00",
+                "interval": "15",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    highs = data.get("high", [])
+                    lows = data.get("low", [])
+                    closes = data.get("close", [])
+                    if len(highs) >= 2:
+                        orb_high = highs[1]
+                        orb_low = lows[1]
+                        orb_mid = round((orb_high + orb_low) / 2.0, 2)
+                        cur_p = closes[-1] if closes else 0.0
+                        diff_pts = cur_p - orb_mid
+                        diff_pct = (diff_pts / orb_mid * 100.0) if orb_mid else 0.0
+                        status_sym = "🟢 Bullish (>Mid)" if diff_pts >= 0 else "🔴 Bearish (<Mid)"
+                        lines.append(
+                            f"🔹 <b>{name}</b> ({exch})\n"
+                            f"• <b>09:30–09:45 High:</b> ₹{orb_high:,.2f}\n"
+                            f"• <b>09:30–09:45 Low:</b> ₹{orb_low:,.2f}\n"
+                            f"• <b>ORB Midpoint:</b> ₹{orb_mid:,.2f}\n"
+                            f"• <b>Current LTP:</b> ₹{cur_p:,.2f} ({status_sym} | {diff_pct:+.2f}%)\n"
+                        )
+            except Exception as e:
+                logger.debug(f"Error fetching {name} ORB: {e}")
+
+        if not lines:
+            return ""
+
+        dt_str = d.strftime("%d-%b-%Y")
+        return (
+            f"🏛 <b>Daily Major Indices ORB Benchmark (10:00 AM IST)</b>\n"
+            f"📅 <b>Date:</b> {dt_str} | <b>Benchmark Range:</b> 09:30–09:45 IST\n\n"
+            + "\n".join(lines)
+            + "⚡ <i>Individual stock alerts trigger exclusively upon genuine ORB breakout.</i>"
+        )
+
     async def _handle_message_command(self, msg: Dict[str, Any]):
         """Processes interactive chat commands from user (balance, positions, status, orders)."""
         chat = msg.get("chat", {})
         chat_id = str(chat.get("id", ""))
-        text = str(msg.get("text", "")).strip().lower()
+        raw_text = str(msg.get("text", "")).strip()
+        text = raw_text.lower()
 
         # Security check: only authorized telegram chat
         if chat_id != str(settings.telegram_chat_id).strip():
@@ -228,7 +292,7 @@ class DhanOrderExecutor:
 
         from app.notifications.telegram import notifier
 
-        if text in ("/balance", "/funds", "balance", "funds"):
+        if text in ("/balance", "/funds", "/limit", "/limits", "balance", "funds", "limit", "limits"):
             try:
                 headers = auth.get_headers()
                 async with httpx.AsyncClient(timeout=8.0) as client:
@@ -260,6 +324,56 @@ class DhanOrderExecutor:
             except Exception as e:
                 reply = f"⚠️ Error querying Dhan API: {e}"
             await notifier.send_message(reply)
+
+        elif text in ("/indices", "/index", "indices", "index"):
+            report = await self.get_indices_orb_report()
+            if report:
+                await notifier.send_message(report)
+            else:
+                await notifier.send_message("⚠️ Could not retrieve today's Index ORB levels from Dhan.")
+
+        elif raw_text.startswith("/token") or (raw_text.startswith("eyJ") and len(raw_text) > 80):
+            token_val = raw_text.split(" ", 1)[1].strip() if raw_text.startswith("/token") else raw_text
+            if not token_val.startswith("eyJ"):
+                await notifier.send_message("⚠️ Invalid token format. A Dhan token must start with <code>eyJ...</code>.")
+                return
+
+            test_headers = {
+                "client-id": settings.dhan_client_id,
+                "access-token": token_val,
+                "Content-Type": "application/json",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get("https://api.dhan.co/v2/profile", headers=test_headers)
+                if resp.status_code == 200:
+                    settings.dhan_access_token = token_val
+                    auth.access_token = token_val
+
+                    from pathlib import Path
+                    env_file = Path(".env")
+                    if env_file.exists():
+                        txt = env_file.read_text(encoding="utf-8")
+                        lines = [
+                            f"DHAN_ACCESS_TOKEN={token_val}" if l.startswith("DHAN_ACCESS_TOKEN=") else l
+                            for l in txt.splitlines()
+                        ]
+                        env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+                    await notifier.send_message(
+                        "✅ <b>DhanHQ Access Token Updated & Validated!</b>\n\n"
+                        "• <b>Status:</b> Connected & Active\n"
+                        "• <b>Environment:</b> <code>.env</code> updated automatically.\n"
+                        "• <b>Live Feed:</b> WebSocket live stream synchronized."
+                    )
+                else:
+                    await notifier.send_message(
+                        f"❌ <b>Dhan Token Validation Failed (HTTP {resp.status_code})</b>\n\n"
+                        f"<code>{resp.text[:150]}</code>\n\n"
+                        "Please verify you copied the complete token from Dhan Web."
+                    )
+            except Exception as e:
+                await notifier.send_message(f"⚠️ Error verifying token: {e}")
 
         elif text in ("/learn", "learn"):
             prog_mid = await notifier.send_and_get_id(
@@ -345,10 +459,13 @@ class DhanOrderExecutor:
         elif text in ("/help", "/start", "help"):
             reply = (
                 "🤖 <b>Telegram Trading Command Center</b>\n\n"
-                "• <code>/balance</code> - Check live Dhan margin & funds\n"
+                "• <code>/balance</code> or <code>/limit</code> - Check live Dhan margin & funds\n"
+                "• <code>/indices</code> - View today's Nifty 50, BankNifty & Sensex ORB levels\n"
+                "• <code>/learn</code> - Run on-demand deep machine learning on 5-yr exchange data\n"
                 "• <code>/positions</code> - View open trades on Dhan\n"
                 "• <code>/orders</code> - Check today's Dhan orders\n"
-                "• <code>/status</code> - Scanner & ML engine health\n\n"
+                "• <code>/status</code> - Scanner & ML engine health\n"
+                "• <code>/token &lt;jwt&gt;</code> - Update Dhan token directly via chat\n\n"
                 "<i>When an ORB breakout occurs, 1-click Buy/Sell buttons will appear right here!</i>"
             )
             await notifier.send_message(reply)

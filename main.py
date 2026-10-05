@@ -308,14 +308,19 @@ class LiveEngine:
             logger.error("No instruments found for configured universe. Aborting live scanner.")
             return
 
-        # 3. Load open paper trades across restarts
+        # 3. Start Telegram listener immediately so /balance, /limit, /learn respond right away
+        from app.trading.order_executor import order_executor
+        from app.strategies.gemini_analyzer import gemini_analyzer
+        approval_listener_task = asyncio.create_task(order_executor.run_telegram_listener())
+
+        # 4. Load open paper trades across restarts
         today = default_session.now().date()
         self.paper_tracker.load_open_trades_from_db(today)
 
-        # 4. Crash / late start recovery
+        # 5. Crash / late start recovery
         await self.recover_intraday_state(instruments)
 
-        # 5. Connect live market feed
+        # 6. Connect live market feed
         live_feed.on_tick = self.on_tick_received
         live_feed.subscribe_instruments(instruments)
 
@@ -330,20 +335,47 @@ class LiveEngine:
         # Start close watchdog
         watchdog_task = asyncio.create_task(self._market_close_watchdog(len(instruments)))
 
-        # Start periodic token renewal watchdog (renews every 16 hours to keep token permanently active)
+        # Start periodic token renewal watchdog (renews every 6 hours to keep token permanently active)
         async def _auto_renew_loop():
             while self._running:
-                await asyncio.sleep(16 * 3600)  # every 16 hours
+                await asyncio.sleep(6 * 3600)  # every 6 hours
                 if not self._running:
                     break
                 logger.info("Triggering scheduled background Dhan token renewal...")
                 ok, msg = await auth.renew_token()
                 if ok:
                     logger.info(f"Background token auto-renewal succeeded: {msg}")
+                    await notifier.send_message(f"🔄 <b>Dhan Token Auto-Renewed</b>\n\n• {msg}")
                 else:
                     logger.warning(f"Background token auto-renewal failed: {msg}")
+                    await notifier.send_message(
+                        f"⚠️ <b>Dhan Token Auto-Renewal Alert</b>\n\n"
+                        f"• {msg}\n"
+                        "• You can generate a new token from Dhan and paste it here directly using: <code>/token &lt;jwt&gt;</code>"
+                    )
 
         renew_task = asyncio.create_task(_auto_renew_loop())
+
+        # Start 10:00 AM Daily Major Indices (Nifty 50, BankNifty, Sensex) ORB Benchmark Broadcast Loop
+        async def _indices_orb_broadcast_loop():
+            while self._running:
+                await asyncio.sleep(20)
+                if not self._running:
+                    break
+                now_t = default_session.now()
+                # On trading days between 10:00:00 and 10:05:00 IST
+                if default_session.is_trading_day(now_t.date()) and time(10, 0) <= now_t.time() < time(10, 5):
+                    idemp = f"INDICES_ORB_{now_t.strftime('%Y%m%d')}"
+                    try:
+                        report_text = await order_executor.get_indices_orb_report(now_t.date())
+                        if report_text:
+                            await notifier.send_message(report_text, idempotency_key=idemp)
+                            logger.info("Dispatched 10:00 AM daily Major Indices ORB Benchmark.")
+                    except Exception as e:
+                        logger.debug(f"Error in indices broadcast loop: {e}")
+                    await asyncio.sleep(300)
+
+        indices_task = asyncio.create_task(_indices_orb_broadcast_loop())
 
         # Start hourly Telegram 24h auto-delete cleanup loop
         async def _telegram_cleanup_loop():
@@ -357,11 +389,6 @@ class LiveEngine:
                     logger.debug(f"Error during Telegram cleanup: {e}")
 
         cleanup_task = asyncio.create_task(_telegram_cleanup_loop())
-
-        # Start Telegram 1-click interactive approval listener
-        from app.trading.order_executor import order_executor
-        from app.strategies.gemini_analyzer import gemini_analyzer
-        approval_listener_task = asyncio.create_task(order_executor.run_telegram_listener())
 
         # Start Hourly AI Market Intelligence Report Loop (Every hour on real Dhan data)
         async def _hourly_intelligence_loop():
