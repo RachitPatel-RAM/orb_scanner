@@ -443,6 +443,7 @@ class TelegramNotifier:
         risk_reward: float = 2.0,
         lot_size: int = 1,
         timeframe: str = "5m",
+        conviction_score: int = 85,
         fvg_gap_size: Optional[float] = None,
         sweep_level: Optional[float] = None,
         logic_summary: Optional[str] = None,
@@ -456,6 +457,7 @@ class TelegramNotifier:
         risk_val = round(risk_pts * lot_size, 2)
         reward_val = round(reward_pts * lot_size, 2)
         now_str = default_session.now().strftime("%H:%M")
+        stars = "⭐⭐⭐" if conviction_score >= 80 else ("⭐⭐" if conviction_score >= 65 else "⚠️")
 
         # Actionable order execution buffer (~0.05%)
         buffer = round(entry_price * 0.0006, 2)
@@ -475,7 +477,8 @@ class TelegramNotifier:
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 <b>Strategy:</b> {strategy_name}\n"
             f"⏰ <b>Trigger Time:</b> {now_str} IST\n"
-            f"⚡ <b>Action:</b> {action_verb} ({'BULLISH' if is_long else 'BEARISH'})\n\n"
+            f"⚡ <b>Action:</b> {action_verb} ({'BULLISH' if is_long else 'BEARISH'})\n"
+            f"🧠 <b>Conviction:</b> {conviction_score}% {stars} (Institutional Edge)\n\n"
             f"💵 <b>Target Entry Level:</b> ₹{entry_price:,.2f} (50% FVG Midpoint)\n"
             f"🎯 <b>Actionable Order Range:</b> ₹{range_low:,.2f} – ₹{range_high:,.2f}\n"
             f"🛑 <b>Stop Loss:</b> ₹{stop_loss:,.2f} (-₹{risk_val:,.2f} | {risk_pts:,.2f} pts)\n"
@@ -486,6 +489,53 @@ class TelegramNotifier:
         )
         idemp = f"SMC_{symbol}_{direction.value}_{default_session.now().strftime('%Y%m%d%H%M')}_{int(entry_price)}"
         return await self.send_message(text, idempotency_key=idemp)
+
+    async def send_commodity_eod_report(self, report_data: Dict[str, Any]) -> bool:
+        """Sends end-of-day MCX Commodity performance and learning audit report."""
+        now_dt = default_session.now()
+        today_str = now_dt.strftime("%d-%b-%Y")
+        trades = report_data.get("trades", [])
+        total_trades = report_data.get("total_trades", len(trades))
+        targets = report_data.get("targets", 0)
+        stops = report_data.get("stops", 0)
+        win_rate = report_data.get("win_rate", 0.0)
+        total_pnl = report_data.get("total_pnl", 0.0)
+        learned_insight = report_data.get("learned_insight", "")
+
+        trade_lines = ""
+        if trades:
+            for t in trades:
+                sym = t.get("symbol", "")
+                strat = t.get("strategy", "SMC")
+                d_str = t.get("direction", "LONG")
+                entry = t.get("entry", 0.0)
+                exit_p = t.get("exit_price", entry)
+                pts = t.get("points", 0.0)
+                pnl = t.get("pnl", 0.0)
+                icon = "🎯" if t.get("outcome") == "TARGET_HIT" else "🛑"
+                sign = "+" if pnl >= 0 else ""
+                trade_lines += (
+                    f"• <b>{sym}</b> ({strat} {d_str} @ ₹{entry:,.2f}):\n"
+                    f"  Exit: ₹{exit_p:,.2f} ➔ {sign}₹{pnl:,.2f} ({pts:+.2f} pts) {icon}\n"
+                )
+        else:
+            trade_lines = "• <i>No confirmed commodity setups triggered today.</i>\n"
+
+        pnl_prefix = "+" if total_pnl >= 0 else ""
+        msg = (
+            f"📊 <b>MCX Commodity Close &amp; Performance Report</b> ({today_str})\n"
+            f"🏁 <b>Session:</b> 23:30 IST MCX Market Close\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>Today's Confirmed Setups ({total_trades} Trades):</b>\n"
+            f"{trade_lines}\n"
+            f"💰 <b>Combined 1-Lot Return:</b> {pnl_prefix}₹{total_pnl:,.2f}\n"
+            f"🏆 <b>Session Stats:</b> {targets}🎯 / {stops}🛑 | Win Rate: {win_rate:.1f}%\n\n"
+            f"🧠 <b>AI Empirical SMC Learning:</b>\n"
+            f"\"{learned_insight}\"\n\n"
+            f"💾 <i>Learned commodity parameters saved to Firebase Realtime Database. Overnight continuous training active across Indian &amp; Commodity markets.</i>"
+        )
+        return await self.send_message(msg, idempotency_key=f"commodity_close_{now_dt.strftime('%Y%m%d')}")
+
 
     async def send_target_hit(self, trade: PaperTrade) -> bool:
 
