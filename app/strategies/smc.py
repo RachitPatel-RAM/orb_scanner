@@ -15,7 +15,7 @@ Supports:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -76,7 +76,10 @@ class SMCTradeSetup:
     fvg: Optional[FairValueGap] = None
     sweep: Optional[LiquiditySweep] = None
     origin: Optional[SMCOriginCandle] = None
+    conviction_score: int = 80
+    calculation_breakdown: str = ""
     status: str = "PENDING"  # PENDING, FILLED, TARGET_HIT, STOP_HIT, EXPIRED
+
 
 
 class SMCEngine:
@@ -192,6 +195,120 @@ class SMCEngine:
 
         return True
 
+    @staticmethod
+    def calculate_smc_conviction(
+        candle: Candle,
+        direction: Direction,
+        fvg: Optional[FairValueGap] = None,
+        sweep: Optional[LiquiditySweep] = None,
+        avg_volume_20: Optional[float] = None,
+    ) -> Tuple[int, str, str, List[str]]:
+        """
+        Rigorously calculates a 0-100% statistical conviction score based on verifiable candle math:
+        - Base: 50 pts
+        - Candle Body Displacement ratio: |Close - Open| / (High - Low)
+          * >= 75% (Clean Marubozu): +25 pts
+          * >= 60% (Solid Body): +15 pts
+          * < 45% (Doji/Weak Body): -15 pts
+        - Liquidity Sweep Counter-Wick Rejection:
+          * Counter-wick > 28%: -35 pts (Severe Fakeout Trap)
+          * Counter-wick <= 15%: +10 pts (Clean Trend Continuation)
+        - Volume Expansion (if avg volume provided):
+          * Vol >= 1.8x: +20 pts
+          * Vol >= 1.3x: +10 pts
+          * Vol < 0.8x: -15 pts (Low-Volume Fakeout)
+        - FVG Imbalance Size & Confluence:
+          * Valid unmitigated FVG with 50% midpoint: +15 pts
+        - High-Volume Session Window:
+          * 17:00 – 22:30 IST (MCX Peak US Session): +10 pts
+          * 12:00 – 15:00 IST (Midday dead chop): -15 pts
+        """
+        score = 50.0
+        reasons = []
+        c_range = candle.high - candle.low
+        if c_range <= 0.0001:
+            return 30, "LOW_PROBABILITY", "50(Base) - 20(Zero Range) = 30%", ["Zero range candle"]
+
+        body = abs(candle.close - candle.open)
+        body_ratio = body / c_range
+        upper_wick = (candle.high - max(candle.open, candle.close)) / c_range
+        lower_wick = (min(candle.open, candle.close) - candle.low) / c_range
+        opp_wick = upper_wick if direction == Direction.LONG else lower_wick
+
+        # 1. Displacement Body Math
+        body_delta = 0.0
+        if body_ratio >= 0.75:
+            body_delta = 25.0
+            reasons.append(f"Displacement Marubozu ({body_ratio*100:.0f}% body) [+25]")
+        elif body_ratio >= 0.60:
+            body_delta = 15.0
+            reasons.append(f"Solid Institutional Body ({body_ratio*100:.0f}%) [+15]")
+        elif body_ratio < 0.45:
+            body_delta = -15.0
+            reasons.append(f"Weak Candle Body ({body_ratio*100:.0f}%) [-15]")
+        score += body_delta
+
+        # 2. Counter-Wick / Fakeout Trap Math
+        wick_delta = 0.0
+        if opp_wick > 0.28:
+            wick_delta = -35.0
+            reasons.append(f"Severe Counter-Wick Rejection ({opp_wick*100:.0f}%) [-35]")
+        elif opp_wick <= 0.15:
+            wick_delta = 10.0
+            reasons.append(f"Clean Trend Wick ({opp_wick*100:.0f}%) [+10]")
+        score += wick_delta
+
+        # 3. Volume Expansion Math
+        vol_delta = 0.0
+        if avg_volume_20 and avg_volume_20 > 0:
+            vol_ratio = candle.volume / avg_volume_20
+            if vol_ratio >= 1.8:
+                vol_delta = 20.0
+                reasons.append(f"Institutional Volume Surge ({vol_ratio:.1f}x) [+20]")
+            elif vol_ratio >= 1.3:
+                vol_delta = 10.0
+                reasons.append(f"Above Average Volume ({vol_ratio:.1f}x) [+10]")
+            elif vol_ratio < 0.8:
+                vol_delta = -15.0
+                reasons.append(f"Low Volume Fakeout Risk ({vol_ratio:.1f}x) [-15]")
+        score += vol_delta
+
+        # 4. FVG Confluence
+        fvg_delta = 15.0 if fvg else 0.0
+        if fvg:
+            reasons.append(f"Unmitigated FVG Void ({fvg.size:.1f} pts) [+15]")
+        score += fvg_delta
+
+        # 5. Session Timing Math
+        session_delta = 0.0
+        c_time = candle.timestamp.time() if hasattr(candle.timestamp, "time") else None
+        if c_time:
+            if time(17, 0) <= c_time <= time(22, 30) or time(10, 0) <= c_time <= time(11, 30):
+                session_delta = 10.0
+                reasons.append(f"Peak Liquidity Window ({c_time.strftime('%H:%M')}) [+10]")
+            elif time(12, 0) <= c_time <= time(15, 0):
+                session_delta = -15.0
+                reasons.append("Midday Consolidation Chop [-15]")
+        score += session_delta
+
+        final_score = int(max(5, min(99, round(score))))
+        if final_score >= 80:
+            level = "HIGH_CONVICTION"
+        elif final_score >= 65:
+            level = "MODERATE"
+        else:
+            level = "LOW_PROBABILITY"
+
+        calc_breakdown = (
+            f"50(Base) "
+            f"{'+' if body_delta>=0 else ''}{body_delta:.0f}(Displacement) "
+            f"{'+' if wick_delta>=0 else ''}{wick_delta:.0f}(CounterWick) "
+            f"{'+' if vol_delta>=0 else ''}{vol_delta:.0f}(Vol) "
+            f"{'+' if fvg_delta>=0 else ''}{fvg_delta:.0f}(FVG) "
+            f"{'+' if session_delta>=0 else ''}{session_delta:.0f}(Session) = {final_score}%"
+        )
+        return final_score, level, calc_breakdown, reasons
+
     def evaluate_fvg_strategy(
         self,
         symbol: str,
@@ -223,23 +340,15 @@ class SMCEngine:
 
         latest_fvg = fvgs[-1]
 
-        # Strict Filter 1: Check displacement candle anatomy
-        fvg_candle = candles[min(len(candles) - 1, latest_fvg.candle_idx + 1)] if latest_fvg.candle_idx < len(candles) else recent
-        c_range = fvg_candle.high - fvg_candle.low
-        if strict_filters and c_range > 0.0001:
-            body_ratio = abs(fvg_candle.close - fvg_candle.open) / c_range
-            upper_wick = (fvg_candle.high - max(fvg_candle.open, fvg_candle.close)) / c_range
-            lower_wick = (min(fvg_candle.open, fvg_candle.close) - fvg_candle.low) / c_range
-
-            # Require solid body (>= 60%) to prove institutional conviction
-            if body_ratio < 0.60:
-                return None
-
-            # Trap filter: reject if counter-wick exceeds 28%
-            if latest_fvg.direction == Direction.LONG and upper_wick > 0.28:
-                return None
-            elif latest_fvg.direction == Direction.SHORT and lower_wick > 0.28:
-                return None
+        # Calculate exact mathematical conviction
+        score, level, calc_str, reasons = self.calculate_smc_conviction(
+            candle=recent,
+            direction=latest_fvg.direction,
+            fvg=latest_fvg,
+            sweep=sweep,
+        )
+        if strict_filters and score < 70:
+            return None
 
         # Bullish Setup
         if latest_fvg.direction == Direction.LONG:
@@ -260,6 +369,8 @@ class SMCEngine:
                 risk_reward=risk_reward_target,
                 fvg=latest_fvg,
                 sweep=sweep,
+                conviction_score=score,
+                calculation_breakdown=calc_str,
             )
 
         # Bearish Setup
@@ -281,6 +392,8 @@ class SMCEngine:
                 risk_reward=risk_reward_target,
                 fvg=latest_fvg,
                 sweep=sweep,
+                conviction_score=score,
+                calculation_breakdown=calc_str,
             )
 
         return None

@@ -36,6 +36,8 @@ class AIConvictionResult:
     pattern: str
     reasons: List[str]
     learned_win_rate: Optional[float] = None
+    calculation_breakdown: str = ""
+
 
 
 class MLLearner:
@@ -139,52 +141,69 @@ class MLLearner:
         feats = self.analyze_candlestick(candle, direction)
         score = 50.0  # Base prior
         reasons = []
+        anatomy_delta = 0.0
+        vol_delta = 0.0
+        orb_delta = 0.0
+        time_delta = 0.0
+        learned_delta = 0.0
 
         # 1. Candlestick Anatomy, SMC Liquidity Sweep & FVG Detection
         opp_wick = feats.upper_wick_ratio if direction == Direction.LONG else feats.lower_wick_ratio
         if opp_wick > 0.32:
             score -= 35.0
-            reasons.append(f"SMC Liquidity Sweep Trap ({opp_wick*100:.0f}% counter-wick rejection)")
+            anatomy_delta -= 35.0
+            reasons.append(f"SMC Liquidity Sweep Trap ({opp_wick*100:.0f}% counter-wick rejection) [-35]")
         elif feats.is_strong_body:
             score += 25.0
-            reasons.append("SMC Institutional Displacement & FVG (Body > 60%)")
+            anatomy_delta += 25.0
+            reasons.append("SMC Institutional Displacement & FVG (Body > 60%) [+25]")
         if feats.body_ratio >= 0.75:
             score += 15.0
-            reasons.append("Clean Imbalance Expansion (Marubozu Conviction)")
+            anatomy_delta += 15.0
+            reasons.append("Clean Imbalance Expansion (Marubozu Conviction) [+15]")
         if feats.has_rejection_wick and opp_wick <= 0.32:
             score -= 25.0
-            reasons.append("SMC Liquidity Grab Wick Detected")
+            anatomy_delta -= 25.0
+            reasons.append("SMC Liquidity Grab Wick Detected [-25]")
 
         # 2. Volume Expansion
         if avg_volume_20 and avg_volume_20 > 0:
             vol_ratio = candle.volume / avg_volume_20
             if vol_ratio >= 2.0:
                 score += 25.0
-                reasons.append(f"Huge Volume Surge ({vol_ratio:.1f}x avg)")
+                vol_delta += 25.0
+                reasons.append(f"Huge Volume Surge ({vol_ratio:.1f}x avg) [+25]")
             elif vol_ratio >= 1.3:
                 score += 15.0
-                reasons.append(f"Above Average Volume ({vol_ratio:.1f}x)")
+                vol_delta += 15.0
+                reasons.append(f"Above Average Volume ({vol_ratio:.1f}x) [+15]")
             elif vol_ratio < 0.7:
                 score -= 15.0
-                reasons.append(f"Low Volume Breakout ({vol_ratio:.1f}x avg)")
+                vol_delta -= 15.0
+                reasons.append(f"Low Volume Breakout ({vol_ratio:.1f}x avg) [-15]")
 
         # 3. ORB Range Width
         if orb_low > 0:
             width_pct = ((orb_high - orb_low) / orb_low) * 100.0
             if 0.3 <= width_pct <= 2.2:
                 score += 10.0
-                reasons.append("Optimal Range Width (Tight base)")
+                orb_delta += 10.0
+                reasons.append("Optimal Range Width (Tight base) [+10]")
             elif width_pct > 3.5:
                 score -= 20.0
-                reasons.append(f"Over-extended Range Outlier ({width_pct:.1f}%)")
+                orb_delta -= 20.0
+                reasons.append(f"Over-extended Range Outlier ({width_pct:.1f}%) [-20]")
 
         # 4. Timing
         c_time = candle.timestamp.time()
         if time(10, 0) <= c_time <= time(11, 30):
             score += 10.0
+            time_delta += 10.0
+            reasons.append("Prime Institutional Morning Window [+10]")
         elif time(12, 0) <= c_time <= time(13, 30):
             score -= 10.0
-            reasons.append("Midday Low Liquidity Window")
+            time_delta -= 10.0
+            reasons.append("Midday Low Liquidity Window [-10]")
 
         # 5. Learned Stock Profile & Recency Intelligence ("navu shikhtu re, junu bhultu re")
         learned_win_rate = None
@@ -199,25 +218,30 @@ class MLLearner:
                 # High win rate boost (empirically validated on Dhan multi-year data)
                 if h_wr >= 68.0:
                     score += 15.0
-                    reasons.append(f"High-Probability Stock ({h_wr:.0f}% Learned Win Rate)")
+                    learned_delta += 15.0
+                    reasons.append(f"High-Probability Stock ({h_wr:.0f}% Learned Win Rate) [+15]")
                 elif h_wr >= 62.0:
                     score += 8.0
-                    reasons.append(f"Favorable Statistical Edge ({h_wr:.0f}% Win Rate)")
+                    learned_delta += 8.0
+                    reasons.append(f"Favorable Statistical Edge ({h_wr:.0f}% Win Rate) [+8]")
                 elif h_wr < 50.0:
                     score -= 20.0
-                    reasons.append(f"Historical Low Follow-Through ({h_wr:.0f}% Win Rate)")
+                    learned_delta -= 20.0
+                    reasons.append(f"Historical Low Follow-Through ({h_wr:.0f}% Win Rate) [-20]")
 
                 # False breakout trap penalty
                 if trap_r >= 25.0:
                     score -= 15.0
-                    reasons.append(f"High Reversal Trap Risk ({trap_r:.0f}% Trap Rate)")
+                    learned_delta -= 15.0
+                    reasons.append(f"High Reversal Trap Risk ({trap_r:.0f}% Trap Rate) [-15]")
 
                 # Volume threshold check against stock's learned optimal signature
                 if avg_volume_20 and avg_volume_20 > 0:
                     v_ratio = candle.volume / avg_volume_20
                     if v_ratio >= opt_vol:
                         score += 10.0
-                        reasons.append(f"Volume Meets Learned Signature (>{opt_vol}x)")
+                        learned_delta += 10.0
+                        reasons.append(f"Volume Meets Learned Signature (>{opt_vol}x) [+10]")
         except Exception as e:
             logger.debug(f"Error querying stock learned model for {candle.symbol}: {e}")
 
@@ -231,12 +255,22 @@ class MLLearner:
         else:
             level = "LOW_PROBABILITY"
 
+        calc_breakdown = (
+            f"50(Base) "
+            f"{'+' if anatomy_delta >= 0 else ''}{anatomy_delta:.0f}(Anatomy) "
+            f"{'+' if vol_delta >= 0 else ''}{vol_delta:.0f}(Vol) "
+            f"{'+' if orb_delta >= 0 else ''}{orb_delta:.0f}(Range) "
+            f"{'+' if time_delta >= 0 else ''}{time_delta:.0f}(Session) "
+            f"{'+' if learned_delta >= 0 else ''}{learned_delta:.0f}(Learned) = {final_score}%"
+        )
+
         return AIConvictionResult(
             score=final_score,
             level=level,
             pattern=feats.pattern_name,
             reasons=reasons,
             learned_win_rate=learned_win_rate,
+            calculation_breakdown=calc_breakdown,
         )
 
     async def update_daily_learning(self, trades: List[PaperTrade]) -> Dict[str, Any]:
