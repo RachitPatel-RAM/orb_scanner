@@ -420,7 +420,54 @@ class TelegramNotifier:
             reply_markup=reply_markup,
         )
 
+    async def send_smc_trade_alert(
+        self,
+        symbol: str,
+        strategy_name: str,
+        direction: Direction,
+        entry_price: float,
+        stop_loss: float,
+        target_price: float,
+        risk_reward: float = 2.0,
+        lot_size: int = 1,
+        timeframe: str = "5m",
+        fvg_gap_size: Optional[float] = None,
+        sweep_level: Optional[float] = None,
+        logic_summary: Optional[str] = None,
+    ) -> bool:
+        """Sends clean, professional SMC Commodity or Index Trade Alert with crystal-clear numbers & core logic."""
+        is_long = direction == Direction.LONG
+        action = "BUY" if is_long else "SELL"
+        emoji = "🟢" if is_long else "🔴"
+        risk_pts = round(abs(entry_price - stop_loss), 2)
+        reward_pts = round(abs(target_price - entry_price), 2)
+        risk_val = round(risk_pts * lot_size, 2)
+        reward_val = round(reward_pts * lot_size, 2)
+        now_str = default_session.now().strftime("%H:%M")
+
+        clean_logic = logic_summary or (
+            f"Institutional displacement created an unmitigated FVG imbalance. "
+            f"Price swept liquidity and is offering optimal 50% midpoint equilibrium entry."
+        )
+
+        text = (
+            f"{emoji} <b>TRADE {action} {symbol} ({timeframe})</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>Strategy:</b> {strategy_name}\n"
+            f"⏰ <b>Trigger Time:</b> {now_str} IST\n"
+            f"⚡ <b>Direction:</b> {'BULLISH (Long)' if is_long else 'BEARISH (Short)'}\n\n"
+            f"💵 <b>Entry Level:</b> ₹{entry_price:,.2f} (50% FVG Midpoint)\n"
+            f"🛑 <b>Stop Loss:</b> ₹{stop_loss:,.2f} (-₹{risk_val:,.2f} | {risk_pts:,.2f} pts)\n"
+            f"🏆 <b>Target:</b> ₹{target_price:,.2f} (+₹{reward_val:,.2f} | {reward_pts:,.2f} pts | 1:{risk_reward:g} R:R)\n\n"
+            f"📦 <b>Lot Size:</b> {lot_size} Qty\n\n"
+            f"🧠 <b>Core SMC Logic:</b>\n"
+            f"• <i>{clean_logic}</i>"
+        )
+        idemp = f"SMC_{symbol}_{direction.value}_{default_session.now().strftime('%Y%m%d%H%M')}_{int(entry_price)}"
+        return await self.send_message(text, idempotency_key=idemp)
+
     async def send_target_hit(self, trade: PaperTrade) -> bool:
+
         """Sends alert when a paper trade reaches its target."""
         time_str = trade.exit_time.strftime("%H:%M") if trade.exit_time else "N/A"
         idemp = f"{trade.trade_date.isoformat()}_{trade.security_id}_TARGET_{trade.direction.value}"

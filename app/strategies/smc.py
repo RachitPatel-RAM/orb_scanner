@@ -199,15 +199,17 @@ class SMCEngine:
         swing_high: float,
         swing_low: float,
         risk_reward_target: float = 2.0,
+        strict_filters: bool = True,
     ) -> Optional[SMCTradeSetup]:
         """
         Strategy 1: Fair Value Gap Sweep & Reversal / Pullback.
         1. Liquidity sweep of earlier high/low
-        2. Displacement movement creating a structure break
-        3. FVG formed in displacement move
-        4. Entry at 50% midpoint of the FVG
-        5. Stop loss beyond sweep extreme
-        6. Target: 2R
+        2. Displacement movement creating a structure break (body >= 60-65%)
+        3. No large counter-wick rejection (opp wick <= 25%)
+        4. FVG formed in displacement move
+        5. Entry at 50% midpoint of the FVG
+        6. Stop loss beyond sweep extreme
+        7. Target: 2R
         """
         if len(candles) < 4:
             return None
@@ -220,6 +222,24 @@ class SMCEngine:
             return None
 
         latest_fvg = fvgs[-1]
+
+        # Strict Filter 1: Check displacement candle anatomy
+        fvg_candle = candles[min(len(candles) - 1, latest_fvg.candle_idx + 1)] if latest_fvg.candle_idx < len(candles) else recent
+        c_range = fvg_candle.high - fvg_candle.low
+        if strict_filters and c_range > 0.0001:
+            body_ratio = abs(fvg_candle.close - fvg_candle.open) / c_range
+            upper_wick = (fvg_candle.high - max(fvg_candle.open, fvg_candle.close)) / c_range
+            lower_wick = (min(fvg_candle.open, fvg_candle.close) - fvg_candle.low) / c_range
+
+            # Require solid body (>= 60%) to prove institutional conviction
+            if body_ratio < 0.60:
+                return None
+
+            # Trap filter: reject if counter-wick exceeds 28%
+            if latest_fvg.direction == Direction.LONG and upper_wick > 0.28:
+                return None
+            elif latest_fvg.direction == Direction.SHORT and lower_wick > 0.28:
+                return None
 
         # Bullish Setup
         if latest_fvg.direction == Direction.LONG:
