@@ -436,61 +436,86 @@ class HistoricalLearner:
         """
         commodities = [
             ("569900", "CRUDEOIL", "CRUDEOIL OCT FUT", 100),
-            ("483079", "GOLD", "GOLD OCT FUT", 1),
-            ("495214", "SILVER", "SILVER DEC FUT", 1),
+            ("495213", "GOLD", "GOLD DEC FUT", 1),
+            ("495214", "SILVER", "SILVER DEC FUT", 30),
         ]
         headers = auth.get_headers()
-        url = f"{self.BASE_URL}/charts/intraday"
         today_str = date.today().isoformat()
         results = []
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             for sid, sym, full_name, lot_sz in commodities:
-                payload = {
-                    "securityId": sid,
-                    "exchangeSegment": "MCX_COMM",
-                    "instrument": "FUTCOM",
-                    "fromDate": f"{today_str} 09:00:00",
-                    "toDate": f"{today_str} 23:30:00",
-                    "interval": "5",
-                }
+                closes, highs, lows, opens = [], [], [], []
+                # 1. Try intraday 5m candles first
                 try:
-                    resp = await client.post(url, headers=headers, json=payload)
+                    intra_url = f"{self.BASE_URL}/charts/intraday"
+                    intra_payload = {
+                        "securityId": sid,
+                        "exchangeSegment": "MCX_COMM",
+                        "instrument": "FUTCOM",
+                        "fromDate": f"{today_str} 09:00:00",
+                        "toDate": f"{today_str} 23:30:00",
+                        "interval": "5",
+                    }
+                    resp = await client.post(intra_url, headers=headers, json=intra_payload)
                     if resp.status_code == 200:
                         d = resp.json()
                         closes = d.get("close", [])
                         highs = d.get("high", [])
                         lows = d.get("low", [])
                         opens = d.get("open", [])
-                        if len(closes) >= 15:
-                            displacement_candles = 0
-                            rejection_wicks = 0
-                            for i in range(len(closes)):
-                                c_range = highs[i] - lows[i]
-                                if c_range > 0:
-                                    b_ratio = abs(closes[i] - opens[i]) / c_range
-                                    if b_ratio >= 0.60:
-                                        displacement_candles += 1
-                                    u_wick = (highs[i] - max(opens[i], closes[i])) / c_range
-                                    l_wick = (min(opens[i], closes[i]) - lows[i]) / c_range
-                                    if max(u_wick, l_wick) > 0.32:
-                                        rejection_wicks += 1
-
-                            model_data = {
-                                "symbol": sym,
-                                "full_name": full_name,
-                                "lot_size": lot_sz,
-                                "ltp": closes[-1],
-                                "candles_studied": len(closes),
-                                "displacement_rate": round((displacement_candles / len(closes)) * 100.0, 1),
-                                "sweep_rejection_rate": round((rejection_wicks / len(closes)) * 100.0, 1),
-                                "optimal_fvg_min_pts": round((highs[-1] - lows[-1]) * 0.35, 2),
-                                "last_trained_at": datetime.now().isoformat(),
-                            }
-                            await firebase_sync.save_commodity_learned_model(sym, model_data)
-                            results.append(model_data)
                 except Exception as e:
-                    logger.debug(f"Commodity learning error for {sym}: {e}")
+                    logger.debug(f"Commodity intraday fetch note for {sym}: {e}")
+
+                # 2. Fall back to historical daily bars if off-market or insufficient intraday candles
+                if len(closes) < 15:
+                    try:
+                        hist_url = f"{self.BASE_URL}/charts/historical"
+                        hist_payload = {
+                            "securityId": sid,
+                            "exchangeSegment": "MCX_COMM",
+                            "instrument": "FUTCOM",
+                            "fromDate": "2026-09-01",
+                            "toDate": today_str,
+                            "expiryCode": 0,
+                        }
+                        resp = await client.post(hist_url, headers=headers, json=hist_payload)
+                        if resp.status_code == 200:
+                            d = resp.json()
+                            closes = d.get("close", [])
+                            highs = d.get("high", [])
+                            lows = d.get("low", [])
+                            opens = d.get("open", [])
+                    except Exception as e:
+                        logger.debug(f"Commodity historical fetch note for {sym}: {e}")
+
+                if len(closes) >= 10:
+                    displacement_candles = 0
+                    rejection_wicks = 0
+                    for i in range(len(closes)):
+                        c_range = highs[i] - lows[i]
+                        if c_range > 0:
+                            b_ratio = abs(closes[i] - opens[i]) / c_range
+                            if b_ratio >= 0.60:
+                                displacement_candles += 1
+                            u_wick = (highs[i] - max(opens[i], closes[i])) / c_range
+                            l_wick = (min(opens[i], closes[i]) - lows[i]) / c_range
+                            if max(u_wick, l_wick) > 0.32:
+                                rejection_wicks += 1
+
+                    model_data = {
+                        "symbol": sym,
+                        "full_name": full_name,
+                        "lot_size": lot_sz,
+                        "ltp": closes[-1],
+                        "candles_studied": len(closes),
+                        "displacement_rate": round((displacement_candles / len(closes)) * 100.0, 1),
+                        "sweep_rejection_rate": round((rejection_wicks / len(closes)) * 100.0, 1),
+                        "optimal_fvg_min_pts": round((highs[-1] - lows[-1]) * 0.35, 2),
+                        "last_trained_at": datetime.now().isoformat(),
+                    }
+                    await firebase_sync.save_commodity_learned_model(sym, model_data)
+                    results.append(model_data)
 
         logger.info(f"Commodity continuous learning cycle complete: {len(results)} MCX assets synced to Firebase.")
         return {"commodities_studied": len(results), "results": results}
