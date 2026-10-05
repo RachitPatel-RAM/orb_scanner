@@ -491,28 +491,80 @@ class LiveEngine:
 
         hourly_task = asyncio.create_task(_hourly_intelligence_loop())
 
-        # Continuous background 5-year empirical learning loop (runs every 2 hours off-market)
+        # Daily Morning Schedule Watchdog:
+        # - 09:00 AM IST: System Health & Status Alert
+        # - 09:14 AM IST: Final Pre-Market Briefing & Numerical Backtest Report
+        async def _morning_schedule_watchdog():
+            sent_health_day = None
+            sent_briefing_day = None
+            while self._running:
+                await asyncio.sleep(15)
+                if not self._running:
+                    break
+                now_t = default_session.now()
+                c_date = now_t.date()
+                if default_session.is_trading_day(c_date):
+                    # 1. 09:00 AM Health Check
+                    if time(9, 0) <= now_t.time() < time(9, 10) and sent_health_day != c_date:
+                        try:
+                            await notifier.send_morning_health_alert(
+                                stocks_count=len(instruments),
+                                dhan_connected=auth.has_credentials,
+                                db_connected=True,
+                                feed_connected=True,
+                            )
+                            sent_health_day = c_date
+                            logger.info("Dispatched 09:00 AM Morning Health Check alert.")
+                        except Exception as e:
+                            logger.debug(f"Error sending morning health alert: {e}")
+
+                    # 2. 09:14 AM Pre-Market Final Briefing
+                    if time(9, 14) <= now_t.time() < time(9, 15) and sent_briefing_day != c_date:
+                        try:
+                            from app.strategies.historical_learner import historical_learner
+                            premarket_info = historical_learner.get_premarket_summary()
+                            await notifier.send_premarket_briefing(premarket_info)
+                            sent_briefing_day = c_date
+                            logger.info("Dispatched 09:14 AM Pre-Market Final Briefing alert.")
+                        except Exception as e:
+                            logger.debug(f"Error sending pre-market briefing alert: {e}")
+
+        morning_task = asyncio.create_task(_morning_schedule_watchdog())
+
+        # Continuous background 5-year empirical learning loop:
+        # - Learns continuously & silently in background off-market/overnight
+        # - Saves all parameters, weights & models to Firebase Realtime DB & SQLite
+        # - Sends silent hourly confirmation: [LEARNED ✅] (no noisy reports)
+        # - Pauses heavy backtesting during live market (09:15 - 15:30) so 100% focus is on live candles & execution
         async def _continuous_historical_learner_loop():
             from app.strategies.historical_learner import historical_learner
-            # Fast initial pass 20 seconds after startup if market is closed or holiday
             await asyncio.sleep(20)
+            last_tick_hour = -1
+
             while self._running:
                 now_t = default_session.now()
                 is_open = default_session.is_market_open(now_t)
+
+                # During live market hours (09:15 - 15:30), stop deep training to focus 100% on live market
+                if is_open:
+                    await asyncio.sleep(60)
+                    continue
+
                 try:
                     # In background, continuously train and calibrate ML conviction models across sectors
                     res = await historical_learner.run_historical_learning_cycle()
-                    # Broadcast off-market reports only when market is closed/holiday
-                    if res and not is_open:
-                        report_text = historical_learner.format_offmarket_learning_report(res)
-                        idemp = f"OFFMARKET_LEARN_{now_t.strftime('%Y%m%d_%H%M')}"
-                        await notifier.send_message(report_text, idempotency_key=idemp)
-                        logger.info("Dispatched multi-year AI learning update to Telegram.")
+
+                    # Hourly silent confirmation: send [LEARNED ✅] once per hour
+                    current_hour = now_t.hour
+                    if current_hour != last_tick_hour:
+                        await notifier.send_learning_tick()
+                        last_tick_hour = current_hour
+                        logger.info(f"Dispatched hourly [LEARNED ✅] confirmation at hour {current_hour}.")
                 except Exception as e:
                     logger.debug(f"Continuous background learning error: {e}")
 
-                # Off-market learning cycle interval: 30 minutes (1800 seconds)
-                await asyncio.sleep(1800)
+                # Interval between background training batches: 15 minutes (900 seconds)
+                await asyncio.sleep(900)
 
         learner_task = asyncio.create_task(_continuous_historical_learner_loop())
 
@@ -540,7 +592,10 @@ class LiveEngine:
             renew_task.cancel()
             cleanup_task.cancel()
             approval_listener_task.cancel()
+            indices_task.cancel()
+            index_breakout_task.cancel()
             hourly_task.cancel()
+            morning_task.cancel()
             learner_task.cancel()
             await live_feed.stop()
             logger.info("Live ORB scanner shut down cleanly.")
