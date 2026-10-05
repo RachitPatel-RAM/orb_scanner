@@ -402,31 +402,55 @@ class HistoricalLearner:
         return learning_payload
 
     def format_eod_report_message(self, daily_trades_summary: Dict[str, Any], learning_res: Dict[str, Any]) -> str:
-        """Formats clean EOD report message for Telegram without brand names, with insights in quotes."""
-        today_str = date.today().isoformat()
+        """Formats comprehensive EOD report message with all breakout stocks, % moves, and 1-lot PnL."""
+        now_dt = default_session.now()
+        today_str = now_dt.strftime("%d-%b-%Y")
         capital = learning_res.get("current_capital", 4322.0)
         pnl = daily_trades_summary.get("pnl", 0.0)
-        pnl_prefix = "+" if pnl >= 0 else ""
         win_rate = daily_trades_summary.get("win_rate", 0.0)
+        total_sig = daily_trades_summary.get("total_signals", 0)
+        targets = daily_trades_summary.get("targets_hit", 0)
+        stops = daily_trades_summary.get("stops_hit", 0)
 
-        rec_lines = ""
-        for s in learning_res.get("top_stocks", [])[:3]:
-            sym = s.get("symbol", "")
-            h_wr = s.get("high_vol_win_rate", 0.0)
-            rec_lines += f"• <b>{sym}</b>: {h_wr:.1f}% Win Rate\n"
+        breakouts = daily_trades_summary.get("breakouts", [])
+        breakout_lines = ""
+        total_hypo_pnl = 0.0
+
+        if breakouts:
+            for b in breakouts:
+                sym = b.get("symbol")
+                d_str = b.get("direction", "LONG")
+                entry = b.get("entry_price", 0.0)
+                exit_p = b.get("exit_price", entry)
+                pct = b.get("pct_move", 0.0)
+                lot = b.get("lot_size", 1)
+                lot_pnl = b.get("lot_pnl", 0.0)
+                total_hypo_pnl += lot_pnl
+                sign_str = "+" if lot_pnl >= 0 else ""
+                icon = "🎯" if lot_pnl > 0 else ("🛑" if lot_pnl < 0 else "⚪")
+                breakout_lines += (
+                    f"• <b>{sym}</b> ({d_str} @ ₹{entry:,.2f}): {pct:+.2f}% move\n"
+                    f"  1 Lot ({lot} Qty) ➔ {sign_str}₹{lot_pnl:,.2f} {icon}\n"
+                )
+        else:
+            breakout_lines = "• <i>No confirmed ORB breakouts triggered today.</i>\n"
 
         clean_learned = learning_res.get("what_learned", "").replace('"', '').strip()
         live_avail = learning_res.get("live_avail_balance", capital)
         live_util = learning_res.get("live_utilized", 0.0)
+        hypo_prefix = "+" if total_hypo_pnl >= 0 else ""
 
         msg = (
-            f"📊 <b>Market Close Summary</b> ({today_str})\n\n"
-            f"<b>Today:</b> {daily_trades_summary.get('targets_hit', 0)}🎯 / {daily_trades_summary.get('stops_hit', 0)}🛑 | P&amp;L: {pnl_prefix}₹{pnl:,.2f} ({win_rate:.0f}% WR)\n\n"
-            f"<b>What Was Learned:</b>\n"
+            f"📊 <b>Market Close &amp; ORB Performance Report</b> ({today_str})\n"
+            f"🏁 <b>Session:</b> 15:25 IST Market Close\n\n"
+            f"🎯 <b>Today's Confirmed Breakouts ({total_sig} Stocks):</b>\n"
+            f"{breakout_lines}\n"
+            f"💰 <b>Combined 1-Lot Return:</b> {hypo_prefix}₹{total_hypo_pnl:,.2f}\n"
+            f"🏆 <b>Session Stats:</b> {targets}🎯 / {stops}🛑 | Win Rate: {win_rate:.0f}%\n"
+            f"💼 <b>Live Dhan Account:</b> ₹{live_avail:,.2f} Avail | ₹{live_util:,.2f} Utilized\n\n"
+            f"🧠 <b>AI Empirical Insights (Continuous Learning Active):</b>\n"
             f"\"{clean_learned}\"\n\n"
-            f"<b>Top Picks:</b>\n"
-            f"{rec_lines}\n"
-            f"<b>Live Dhan Account:</b> ₹{live_avail:,.2f} Avail | ₹{live_util:,.2f} Utilized (5x Margin)"
+            f"💾 <i>Learned conviction parameters saved to Firebase Realtime Database. Overnight background training initialized.</i>"
         )
         return msg
 

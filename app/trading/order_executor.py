@@ -80,15 +80,20 @@ class DhanOrderExecutor:
         reply_markup = {
             "inline_keyboard": [
                 [
-                    {"text": btn_text, "callback_data": f"app:{sig_key}"},
+                    {"text": btn_text, "callback_data": f"app:{sig_key}:1"},
                     {"text": "✖ Reject", "callback_data": f"rej:{sig_key}"},
-                ]
+                ],
+                [
+                    {"text": f"2 Lots ({qty * 2})", "callback_data": f"app:{sig_key}:2"},
+                    {"text": f"3 Lots ({qty * 3})", "callback_data": f"app:{sig_key}:3"},
+                    {"text": f"4 Lots ({qty * 4})", "callback_data": f"app:{sig_key}:4"},
+                ],
             ]
         }
 
         return reply_markup, qty, margin_req
 
-    async def execute_dhan_order(self, order_data: Dict[str, Any]) -> Tuple[bool, str]:
+    async def execute_dhan_order(self, order_data: Dict[str, Any], lot_multiplier: int = 1) -> Tuple[bool, str]:
         """
         Places order on Dhan with Stop Loss and Target.
         Uses place_super_order (Bracket Order) with fallback to place_order with trigger.
@@ -98,13 +103,13 @@ class DhanOrderExecutor:
         symbol = order_data["symbol"]
         is_long = order_data["direction"] == Direction.LONG
         txn_type = "BUY" if is_long else "SELL"
-        qty = int(order_data["lot_size"])
+        qty = int(order_data["lot_size"]) * max(1, lot_multiplier)
         price = float(order_data["entry_price"])
         target = float(order_data["target"])
         stop_loss = float(order_data["stop_loss"])
 
         logger.info(
-            f"Placing Dhan Order: {txn_type} {symbol} ({sec_id}) Qty={qty} Price={price} "
+            f"Placing Dhan Order: {txn_type} {symbol} ({sec_id}) Lots={lot_multiplier} Qty={qty} Price={price} "
             f"SL={stop_loss} Target={target}"
         )
 
@@ -279,6 +284,94 @@ class DhanOrderExecutor:
             + "⚡ <i>Individual stock alerts trigger exclusively upon genuine ORB breakout.</i>"
         )
 
+    async def check_indices_breakouts(self, on_signal_callback) -> None:
+        """Monitors NIFTY 50, BANKNIFTY, and SENSEX for ORB breakouts and dispatches interactive signals."""
+        from app.dhan.auth import auth
+        from app.market.session import default_session
+        from app.storage.models import Signal, Direction, Candle
+        now_dt = default_session.now()
+        d = now_dt.date()
+        headers = auth.get_headers()
+        url = "https://api.dhan.co/v2/charts/intraday"
+        indices = [
+            ("13", "NIFTY", "Nifty 50", "NSE", "IDX_I", 75),
+            ("25", "BANKNIFTY", "Nifty Bank", "NSE", "IDX_I", 30),
+            ("51", "SENSEX", "Sensex", "BSE", "IDX_I", 20),
+        ]
+        for sid, sym, name, exch, seg, default_lot in indices:
+            idemp_prefix = f"IDX_{sym}_{d.isoformat()}"
+            if getattr(self, f"_idx_broken_{sym}_{d.isoformat()}", False):
+                continue
+
+            payload = {
+                "securityId": sid,
+                "exchangeSegment": seg,
+                "instrument": "INDEX",
+                "fromDate": f"{d.isoformat()} 09:15:00",
+                "toDate": f"{d.isoformat()} 15:30:00",
+                "interval": "15",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    highs = data.get("high", [])
+                    lows = data.get("low", [])
+                    closes = data.get("close", [])
+                    opens = data.get("open", [])
+                    volumes = data.get("volume", [1000] * len(closes))
+                    if len(highs) >= 3:
+                        orb_high = highs[1]
+                        orb_low = lows[1]
+                        orb_mid = round((orb_high + orb_low) / 2.0, 2)
+                        latest_close = closes[-1]
+                        latest_high = highs[-1]
+                        latest_low = lows[-1]
+
+                        direction = None
+                        if latest_close > orb_high:
+                            direction = Direction.LONG
+                            sl = orb_mid
+                            target = round(latest_close + (latest_close - sl) * 2.0, 2)
+                        elif latest_close < orb_low:
+                            direction = Direction.SHORT
+                            sl = orb_mid
+                            target = round(latest_close - (sl - latest_close) * 2.0, 2)
+
+                        if direction:
+                            setattr(self, f"_idx_broken_{sym}_{d.isoformat()}", True)
+                            c = Candle(
+                                security_id=sid,
+                                symbol=sym,
+                                timestamp=now_dt,
+                                open=opens[-1] if opens else latest_close,
+                                high=latest_high,
+                                low=latest_low,
+                                close=latest_close,
+                                volume=float(volumes[-1]) if volumes else 1000.0,
+                                is_closed=True,
+                            )
+                            sig = Signal(
+                                trade_date=d,
+                                security_id=sid,
+                                symbol=sym,
+                                timestamp=now_dt,
+                                strategy="ORB-15",
+                                direction=direction,
+                                entry_price=latest_close,
+                                orb_high=orb_high,
+                                orb_low=orb_low,
+                                stop_loss=sl,
+                                target=target,
+                                risk_reward=2.0,
+                                idempotency_key=f"{idemp_prefix}_{direction.value}",
+                            )
+                            if on_signal_callback:
+                                on_signal_callback(sig, candle=c)
+            except Exception as e:
+                logger.debug(f"Error checking {sym} breakout: {e}")
+
     async def _handle_message_command(self, msg: Dict[str, Any]):
         """Processes interactive chat commands from user (balance, positions, status, orders)."""
         chat = msg.get("chat", {})
@@ -332,8 +425,17 @@ class DhanOrderExecutor:
             else:
                 await notifier.send_message("⚠️ Could not retrieve today's Index ORB levels from Dhan.")
 
-        elif raw_text.startswith("/token") or (raw_text.startswith("eyJ") and len(raw_text) > 80):
-            token_val = raw_text.split(" ", 1)[1].strip() if raw_text.startswith("/token") else raw_text
+        elif text in ("/token", "token"):
+            reply = (
+                "🔑 <b>Update Dhan Access Token</b>\n\n"
+                "To update your token, generate a fresh 24-hour token from web.dhan.co and reply with:\n"
+                "<code>/token &lt;your_jwt_token&gt;</code>\n\n"
+                "<i>Or simply paste the raw token (starting with eyJ...) directly into this chat!</i>"
+            )
+            await notifier.send_message(reply)
+
+        elif raw_text.startswith("/token ") or (raw_text.startswith("eyJ") and len(raw_text) > 80):
+            token_val = raw_text.split(" ", 1)[1].strip() if raw_text.startswith("/token ") else raw_text
             if not token_val.startswith("eyJ"):
                 await notifier.send_message("⚠️ Invalid token format. A Dhan token must start with <code>eyJ...</code>.")
                 return
@@ -493,21 +595,24 @@ class DhanOrderExecutor:
         orig_text = message.get("text", "")
 
         if data.startswith("app:"):
-            sig_key = data.split(":", 1)[1]
+            parts = data.split(":")
+            sig_key = parts[1]
+            lot_mult = int(parts[2]) if len(parts) > 2 else 1
             order_data = self._pending_orders.get(sig_key)
             if not order_data:
                 await self._answer_callback(query_id, "Signal expired or not found.")
                 return
 
-            await self._answer_callback(query_id, "Submitting order to Dhan with SL & Target...")
-            success, msg = await self.execute_dhan_order(order_data)
+            await self._answer_callback(query_id, f"Submitting order for {lot_mult} Lot(s) to Dhan...")
+            success, msg = await self.execute_dhan_order(order_data, lot_multiplier=lot_mult)
+            total_qty = order_data["lot_size"] * lot_mult
 
             # Update original Telegram message
             new_text = (
                 f"{orig_text}\n\n"
                 f"{'✅ <b>ORDER EXECUTED ON DHAN</b>' if success else '⚠️ <b>ORDER PLACEMENT FAILED</b>'}\n"
                 f"<b>Status:</b> {msg}\n"
-                f"<b>Quantity:</b> 1 Lot ({order_data['lot_size']} units)\n"
+                f"<b>Executed Quantity:</b> {lot_mult} Lot(s) ({total_qty} units)\n"
                 f"<b>Target:</b> ₹{order_data['target']:,.2f}\n"
                 f"<b>Stop Loss:</b> ₹{order_data['stop_loss']:,.2f}\n"
                 f"<b>Execution Time:</b> {datetime.now().strftime('%H:%M:%S')} IST"

@@ -170,6 +170,7 @@ class LiveEngine:
         """
         Crash / Late-Start Recovery:
         If started after 09:15, recover missing 1m candles for today and reconstruct ORB levels.
+        Replays post-10:00 candles to detect and register any breakouts that occurred earlier today.
         """
         now = default_session.now()
         market_open_dt, orb_end_dt, _, _ = default_session.get_session_datetimes(now.date())
@@ -178,27 +179,39 @@ class LiveEngine:
             logger.info("Market is not currently in session. Intraday state recovery skipped.")
             return
 
-        logger.info(f"Late start / restart detected at {now.strftime('%H:%M:%S')}. Recovering session state...")
+        logger.info(f"Late start / restart detected at {now.strftime('%H:%M:%S')}. Recovering session state in parallel...")
 
-        for inst in instruments:
-            try:
-                candles = await historical_manager.recover_today_intraday(inst.security_id, inst.symbol)
-                for c in candles:
-                    c_time = default_session.localize(c.timestamp)
-                    if default_session.is_orb_period(c_time):
-                        self.strategy.register_orb_candle(c)
+        sem = asyncio.Semaphore(10)
 
-                # Finalize ORB if past 09:30
-                if now >= orb_end_dt:
-                    self.strategy.finalize_orb_levels(now.date(), inst.security_id, inst.symbol)
+        async def _recover_single_stock(inst):
+            async with sem:
+                try:
+                    candles = await historical_manager.recover_today_intraday(inst.security_id, inst.symbol)
+                    for c in candles:
+                        c_time = default_session.localize(c.timestamp)
+                        if default_session.is_orb_period(c_time):
+                            self.strategy.register_orb_candle(c)
 
-            except Exception as e:
-                logger.error(f"Error recovering intraday candles for {inst.symbol}: {e}")
+                    # Finalize ORB if past 10:00
+                    if now >= orb_end_dt:
+                        self.strategy.finalize_orb_levels(now.date(), inst.security_id, inst.symbol)
 
-        logger.info("Intraday state recovery completed.")
+                        # Replay post-10:00 candles through breakout checker
+                        for c in candles:
+                            c_time = default_session.localize(c.timestamp)
+                            if c_time >= orb_end_dt:
+                                sig = self.strategy.process_candle(c)
+                                if sig:
+                                    self._on_signal_generated(sig, candle=c)
+                                    break
+                except Exception as e:
+                    logger.debug(f"Error recovering intraday candles for {inst.symbol}: {e}")
+
+        await asyncio.gather(*[_recover_single_stock(inst) for inst in instruments])
+        logger.info("Intraday state recovery completed across universe.")
 
     async def _market_close_watchdog(self, instruments_count: int) -> None:
-        """Monitors for market close (15:30) to generate and dispatch the daily summary."""
+        """Monitors for market close (15:25–15:30) to generate and dispatch the daily summary."""
         while self._running:
             await asyncio.sleep(15)
             now = default_session.now()
@@ -206,14 +219,14 @@ class LiveEngine:
             # Flush any unclosed candles
             self.candle_builder.flush_stale_candles(now)
 
-            # Check if market has closed and summary not yet sent (STRICTLY on active trading days)
+            # Check if market has reached close cutoff (15:25 IST) and summary not yet sent
             today_str = now.date().isoformat()
             if getattr(self, "_last_summary_date", None) != today_str:
                 self._daily_summary_sent = False
 
             if (
                 default_session.is_trading_day(now.date())
-                and now.time() >= default_session.market_close_time
+                and now.time() >= default_session.entry_end_time
                 and not self._daily_summary_sent
             ):
                 with db.get_connection() as conn:
@@ -225,6 +238,39 @@ class LiveEngine:
                     long_sig = sum(r["cnt"] for r in sig_rows if r["direction"] == "LONG")
                     short_sig = sum(r["cnt"] for r in sig_rows if r["direction"] == "SHORT")
                     total_sig = long_sig + short_sig
+
+                    # Detailed itemized breakouts for today
+                    breakout_rows = conn.execute(
+                        """
+                        SELECT s.symbol, s.direction, s.entry_price, s.orb_high, s.orb_low,
+                               t.exit_price, t.pnl, t.exit_reason
+                        FROM signals s
+                        LEFT JOIN paper_trades t ON s.id = t.signal_id
+                        WHERE s.trade_date = ?
+                        ORDER BY s.id ASC
+                        """,
+                        (today_str,),
+                    ).fetchall()
+
+                    breakout_items = []
+                    for row in breakout_rows:
+                        sym = row["symbol"]
+                        dir_str = row["direction"]
+                        entry = float(row["entry_price"] or 0.0)
+                        exit_p = float(row["exit_price"] or entry)
+                        pct = ((exit_p - entry) / entry * 100.0) if dir_str == "LONG" else ((entry - exit_p) / entry * 100.0)
+                        lot_sz = instrument_manager.get_lot_size(sym)
+                        lot_pnl = ((exit_p - entry) * lot_sz) if dir_str == "LONG" else ((entry - exit_p) * lot_sz)
+                        breakout_items.append({
+                            "symbol": sym,
+                            "direction": dir_str,
+                            "entry_price": entry,
+                            "exit_price": exit_p,
+                            "pct_move": pct,
+                            "lot_size": lot_sz,
+                            "lot_pnl": lot_pnl,
+                            "exit_reason": row["exit_reason"],
+                        })
 
                     # Trades summary (only count real live trades linked to signals)
                     tr_rows = conn.execute(
@@ -249,6 +295,7 @@ class LiveEngine:
                     "eod_exits": eod_exits,
                     "pnl": total_pnl,
                     "win_rate": win_rate,
+                    "breakouts": breakout_items,
                 }
 
                 logger.info(f"Generating Market Close Summary & 5-Year Deep Learning: {summary_data}")
@@ -376,6 +423,21 @@ class LiveEngine:
                     await asyncio.sleep(300)
 
         indices_task = asyncio.create_task(_indices_orb_broadcast_loop())
+
+        # Start Index Breakout Watchdog (Monitors Nifty 50, BankNifty, Sensex for ORB breakouts)
+        async def _indices_breakout_loop():
+            while self._running:
+                await asyncio.sleep(45)
+                if not self._running:
+                    break
+                now_t = default_session.now()
+                if default_session.is_market_open(now_t) and default_session.is_entry_allowed(now_t):
+                    try:
+                        await order_executor.check_indices_breakouts(self._on_signal_generated)
+                    except Exception as e:
+                        logger.debug(f"Error checking index breakouts: {e}")
+
+        index_breakout_task = asyncio.create_task(_indices_breakout_loop())
 
         # Start hourly Telegram 24h auto-delete cleanup loop
         async def _telegram_cleanup_loop():
