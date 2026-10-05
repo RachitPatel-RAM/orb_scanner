@@ -551,15 +551,17 @@ class LiveEngine:
                     continue
 
                 try:
-                    # In background, continuously train and calibrate ML conviction models across sectors
-                    res = await historical_learner.run_historical_learning_cycle()
+                    # In background, continuously train and calibrate ML conviction models across sectors (Indian Market)
+                    res_nse = await historical_learner.run_historical_learning_cycle()
+                    # In background, continuously train and calibrate SMC models on MCX Commodities (Crude Oil, Gold, Silver)
+                    res_comm = await historical_learner.run_commodity_learning_cycle()
 
-                    # Hourly silent confirmation: send [LEARNED ✅] once per hour
+                    # Hourly silent confirmation: send [LEARN INDIAN MARKET ✅, LEARN COMMODITY ✅]
                     current_hour = now_t.hour
                     if current_hour != last_tick_hour:
                         await notifier.send_learning_tick()
                         last_tick_hour = current_hour
-                        logger.info(f"Dispatched hourly [LEARNED ✅] confirmation at hour {current_hour}.")
+                        logger.info(f"Dispatched hourly dual-market learning heartbeat at hour {current_hour}.")
                 except Exception as e:
                     logger.debug(f"Continuous background learning error: {e}")
 

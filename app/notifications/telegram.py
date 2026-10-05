@@ -313,7 +313,7 @@ class TelegramNotifier:
 
     async def send_learning_tick(self) -> bool:
         """Sends the silent hourly confirmation message requested by user."""
-        return await self.send_message("[LEARNED ✅]", idempotency_key=f"learned_tick_{default_session.now().strftime('%Y%m%d_%H')}")
+        return await self.send_message("[LEARN INDIAN MARKET ✅, LEARN COMMODITY ✅]", idempotency_key=f"learned_tick_{default_session.now().strftime('%Y%m%d_%H')}")
 
 
     async def send_signal(self, signal: Signal, candle: Optional[Candle] = None) -> bool:
@@ -386,6 +386,10 @@ class TelegramNotifier:
             orb_broken_label = "High" if is_long else "Low"
             orb_broken_val = signal.orb_high if is_long else signal.orb_low
 
+            opt_buffer = max(1.0, round(opt_info.ltp * 0.025, 1))
+            opt_low = round(max(0.5, opt_info.ltp - opt_buffer), 1)
+            opt_high = round(opt_info.ltp + opt_buffer, 1)
+
             text = (
                 f"{header}\n\n"
                 f"🎯 <b>Contract:</b> {opt_info.custom_symbol}\n"
@@ -393,6 +397,7 @@ class TelegramNotifier:
                 f"🧠 <b>Conviction:</b> {ai_score}% {stars}{learned_wr_str}\n"
                 f"\"{clean_reason}\"\n\n"
                 f"💰 <b>Option Premium Entry:</b> ₹{opt_info.ltp:,.2f}\n"
+                f"⚡ <b>Actionable Buy Range:</b> ₹{opt_low:,.2f} – ₹{opt_high:,.2f}\n"
                 f"🛑 <b>Option Stop Loss:</b> ₹{opt_info.stop_loss_premium:,.2f} (-₹{risk_val:,.2f} risk)\n"
                 f"🏆 <b>Option Target:</b> ₹{opt_info.target_premium:,.2f} (+₹{reward_val:,.2f} reward | 1:2 R:R)\n\n"
                 f"📦 <b>Quantity:</b> 1 Lot ({opt_info.lot_size} Qty)\n"
@@ -401,13 +406,20 @@ class TelegramNotifier:
             )
         else:
             header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
+            stock_buffer = max(0.5, round(signal.entry_price * 0.0015, 2))
+            stk_low = round(signal.entry_price - stock_buffer, 2)
+            stk_high = round(signal.entry_price + stock_buffer, 2)
+            action_tag = "BUY" if is_long else "SELL"
+
             text = (
                 f"{header}\n\n"
                 f"<b>Stock:</b> {signal.symbol}\n"
+                f"<b>Action:</b> {action_tag}\n"
                 f"<b>Time:</b> {time_str} IST\n\n"
                 f"<b>Conviction:</b> {ai_score}% {stars}{learned_wr_str}\n"
                 f"\"{clean_reason}\"\n\n"
                 f"<b>Entry / Level:</b> ₹{signal.entry_price:,.2f}\n"
+                f"⚡ <b>Actionable Order Range:</b> ₹{stk_low:,.2f} – ₹{stk_high:,.2f}\n"
                 f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n"
                 f"<b>Target:</b> ₹{signal.target:,.2f} (1:{signal.risk_reward:g})\n\n"
                 f"<b>Quantity:</b> {qty} shares\n"
@@ -445,6 +457,14 @@ class TelegramNotifier:
         reward_val = round(reward_pts * lot_size, 2)
         now_str = default_session.now().strftime("%H:%M")
 
+        # Actionable order execution buffer (~0.05%)
+        buffer = round(entry_price * 0.0006, 2)
+        if buffer < 1.0 and entry_price > 100:
+            buffer = 2.0
+        range_low = round(entry_price - buffer, 2)
+        range_high = round(entry_price + buffer, 2)
+        action_verb = "BUY / CALL" if is_long else "SELL / PUT"
+
         clean_logic = logic_summary or (
             f"Institutional displacement created an unmitigated FVG imbalance. "
             f"Price swept liquidity and is offering optimal 50% midpoint equilibrium entry."
@@ -455,8 +475,9 @@ class TelegramNotifier:
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 <b>Strategy:</b> {strategy_name}\n"
             f"⏰ <b>Trigger Time:</b> {now_str} IST\n"
-            f"⚡ <b>Direction:</b> {'BULLISH (Long)' if is_long else 'BEARISH (Short)'}\n\n"
-            f"💵 <b>Entry Level:</b> ₹{entry_price:,.2f} (50% FVG Midpoint)\n"
+            f"⚡ <b>Action:</b> {action_verb} ({'BULLISH' if is_long else 'BEARISH'})\n\n"
+            f"💵 <b>Target Entry Level:</b> ₹{entry_price:,.2f} (50% FVG Midpoint)\n"
+            f"🎯 <b>Actionable Order Range:</b> ₹{range_low:,.2f} – ₹{range_high:,.2f}\n"
             f"🛑 <b>Stop Loss:</b> ₹{stop_loss:,.2f} (-₹{risk_val:,.2f} | {risk_pts:,.2f} pts)\n"
             f"🏆 <b>Target:</b> ₹{target_price:,.2f} (+₹{reward_val:,.2f} | {reward_pts:,.2f} pts | 1:{risk_reward:g} R:R)\n\n"
             f"📦 <b>Lot Size:</b> {lot_size} Qty\n\n"

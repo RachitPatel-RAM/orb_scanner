@@ -100,6 +100,22 @@ class FirebaseSyncManager:
             logger.warning(f"Error syncing {symbol} learned model to Firebase: {e}")
             return False
 
+    async def save_commodity_learned_model(self, symbol: str, model_data: Dict[str, Any]) -> bool:
+        """Saves a commodity's continuous empirical learned model to Firebase Realtime Database."""
+        url = f"{self.base_url}/commodity_learned_models/{symbol}.json"
+        payload = self._sanitize({
+            "symbol": symbol,
+            "updated_at": datetime.now().isoformat(),
+            **model_data,
+        })
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.put(url, json=payload)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.warning(f"Error syncing {symbol} commodity model to Firebase: {e}")
+            return False
+
     async def save_live_account_state(self, account_data: Dict[str, Any]) -> bool:
         """Saves live Dhan account balance, margin, and funds to Firebase Realtime Database."""
         url = f"{self.base_url}/account/live_funds.json"
