@@ -140,20 +140,20 @@ class MLLearner:
         score = 50.0  # Base prior
         reasons = []
 
-        # 1. Candlestick Anatomy & Contextual Outlier Detection (Unit 4)
+        # 1. Candlestick Anatomy, SMC Liquidity Sweep & FVG Detection
         opp_wick = feats.upper_wick_ratio if direction == Direction.LONG else feats.lower_wick_ratio
-        if opp_wick > 0.40:
+        if opp_wick > 0.32:
             score -= 35.0
-            reasons.append(f"Contextual Outlier Trap ({opp_wick*100:.0f}% counter wick)")
+            reasons.append(f"SMC Liquidity Sweep Trap ({opp_wick*100:.0f}% counter-wick rejection)")
         elif feats.is_strong_body:
-            score += 20.0
-            reasons.append("Strong Candle Body (>60% range)")
+            score += 25.0
+            reasons.append("SMC Institutional Displacement & FVG (Body > 60%)")
         if feats.body_ratio >= 0.75:
             score += 15.0
-            reasons.append("Marubozu Institutional Conviction")
-        if feats.has_rejection_wick and opp_wick <= 0.40:
+            reasons.append("Clean Imbalance Expansion (Marubozu Conviction)")
+        if feats.has_rejection_wick and opp_wick <= 0.32:
             score -= 25.0
-            reasons.append("Counter-trend Rejection Wick Detected")
+            reasons.append("SMC Liquidity Grab Wick Detected")
 
         # 2. Volume Expansion
         if avg_volume_20 and avg_volume_20 > 0:

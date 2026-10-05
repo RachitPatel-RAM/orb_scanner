@@ -40,9 +40,14 @@ class DhanOrderExecutor:
             self._dhan = dhanhq(ctx)
         return self._dhan
 
-    def register_signal_for_approval(self, signal: Signal) -> Tuple[Dict[str, Any], int, float]:
+    def register_signal_for_approval(
+        self,
+        signal: Signal,
+        opt_contract: Optional[Any] = None,
+    ) -> Tuple[Dict[str, Any], int, float]:
         """
-        Calculates quantity and required margin fitting user's capital (₹4,322 with 5x Intraday Margin).
+        Calculates quantity and required margin fitting user's capital.
+        For index signals, incorporates exact OptionContractInfo with option-level pricing.
         """
         from app.storage.database import db
         default_cap = float(os.getenv("TRADING_CAPITAL", "4322.0"))
@@ -50,6 +55,75 @@ class DhanOrderExecutor:
         # 5x intraday MIS margin on NSE Equity
         usable_capital = capital * 0.85  # keep safety buffer
         max_exposure = usable_capital * 5.0
+
+        is_index = signal.symbol in ("NIFTY", "BANKNIFTY", "SENSEX") or str(signal.security_id) in ("13", "25", "51")
+
+        if opt_contract:
+            qty = opt_contract.lot_size
+            margin_req = opt_contract.margin_required
+            total_value = margin_req
+            btn_text = f"{'🟢' if signal.direction == Direction.LONG else '🔴'} Buy 1 Lot {int(opt_contract.strike_price)} {opt_contract.option_type} @ ₹{opt_contract.ltp:,.0f}"
+            sig_key = f"{signal.security_id}_{int(signal.timestamp.timestamp())}"
+
+            self._pending_orders[sig_key] = {
+                "signal": signal,
+                "security_id": opt_contract.security_id,
+                "symbol": opt_contract.underlying,
+                "direction": signal.direction,
+                "entry_price": opt_contract.ltp,
+                "stop_loss": opt_contract.stop_loss_premium,
+                "target": opt_contract.target_premium,
+                "lot_size": qty,
+                "margin_req": margin_req,
+                "total_lot_price": total_value,
+                "opt_contract": opt_contract,
+                "created_at": datetime.now(),
+            }
+
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": btn_text, "callback_data": f"app:{sig_key}:1"},
+                        {"text": "✖ Dismiss", "callback_data": f"rej:{sig_key}"},
+                    ],
+                    [
+                        {"text": f"2 Lots ({qty * 2})", "callback_data": f"app:{sig_key}:2"},
+                        {"text": f"3 Lots ({qty * 3})", "callback_data": f"app:{sig_key}:3"},
+                        {"text": f"4 Lots ({qty * 4})", "callback_data": f"app:{sig_key}:4"},
+                    ],
+                ]
+            }
+            return reply_markup, qty, margin_req
+
+        if is_index:
+            lot_map = {"NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20}
+            idx_lot = lot_map.get(signal.symbol, 65)
+            opt_type = "CE (Call)" if signal.direction == Direction.LONG else "PE (Put)"
+            strike = round(signal.entry_price / 50.0) * 50 if signal.symbol == "NIFTY" else round(signal.entry_price / 100.0) * 100
+            btn_text = f"{'🟢' if signal.direction == Direction.LONG else '🔴'} Buy 1 Lot {signal.symbol} {strike} {opt_type}"
+            sig_key = f"{signal.security_id}_{int(signal.timestamp.timestamp())}"
+            self._pending_orders[sig_key] = {
+                "signal": signal,
+                "security_id": signal.security_id,
+                "symbol": signal.symbol,
+                "direction": signal.direction,
+                "entry_price": signal.entry_price,
+                "stop_loss": signal.stop_loss,
+                "target": signal.target,
+                "lot_size": idx_lot,
+                "margin_req": 4500.0,
+                "total_lot_price": 4500.0,
+                "created_at": datetime.now(),
+            }
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": btn_text, "callback_data": f"app:{sig_key}:1"},
+                        {"text": "✖ Dismiss", "callback_data": f"rej:{sig_key}"},
+                    ],
+                ]
+            }
+            return reply_markup, idx_lot, 4500.0
 
         qty = max(1, int(max_exposure / signal.entry_price))
         margin_req = round((signal.entry_price * qty) / 5.0, 2)
@@ -70,23 +144,6 @@ class DhanOrderExecutor:
             "total_lot_price": total_value,
             "created_at": datetime.now(),
         }
-
-        is_index = signal.symbol in ("NIFTY", "BANKNIFTY", "SENSEX") or str(signal.security_id) in ("13", "25", "51")
-        if is_index:
-            lot_map = {"NIFTY": 75, "BANKNIFTY": 30, "SENSEX": 20}
-            idx_lot = lot_map.get(signal.symbol, 75)
-            opt_type = "CE (Call)" if signal.direction == Direction.LONG else "PE (Put)"
-            strike = round(signal.entry_price / 50.0) * 50 if signal.symbol == "NIFTY" else round(signal.entry_price / 100.0) * 100
-            btn_text = f"{'🟢' if signal.direction == Direction.LONG else '🔴'} Trade {signal.symbol} {strike} {opt_type} ({idx_lot} Qty)"
-            reply_markup = {
-                "inline_keyboard": [
-                    [
-                        {"text": btn_text, "callback_data": f"app:{sig_key}:1"},
-                        {"text": "✖ Dismiss", "callback_data": f"rej:{sig_key}"},
-                    ],
-                ]
-            }
-            return reply_markup, idx_lot, 4500.0
 
         # Format button with exact margin price fitting the user's capital
         if signal.direction == Direction.LONG:
@@ -124,6 +181,15 @@ class DhanOrderExecutor:
         price = float(order_data["entry_price"])
         target = float(order_data["target"])
         stop_loss = float(order_data["stop_loss"])
+
+        opt_contract = order_data.get("opt_contract")
+        if opt_contract:
+            return True, (
+                f"✅ <b>Option Setup Staged:</b> Buy {lot_multiplier} Lot(s) of <b>{opt_contract.custom_symbol}</b> "
+                f"({opt_contract.lot_size * lot_multiplier} Qty) @ ₹{opt_contract.ltp:,.2f} | "
+                f"SL: ₹{opt_contract.stop_loss_premium:,.2f} | Target: ₹{opt_contract.target_premium:,.2f}.\n\n"
+                f"⚡ <i>Execute immediately via Dhan App or Web Option Chain.</i>"
+            )
 
         logger.info(
             f"Placing Dhan Order: {txn_type} {symbol} ({sec_id}) Lots={lot_multiplier} Qty={qty} Price={price} "

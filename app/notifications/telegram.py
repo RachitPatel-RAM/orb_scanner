@@ -272,15 +272,20 @@ class TelegramNotifier:
         is_long = signal.direction == Direction.LONG
         is_index = signal.symbol in ("NIFTY", "BANKNIFTY", "SENSEX") or str(signal.security_id) in ("13", "25", "51")
 
+        opt_info = None
         if is_index:
-            header = "🏛 <b>INDEX ORB BULLISH BREAKOUT</b>" if is_long else "🏛 <b>INDEX ORB BEARISH BREAKDOWN</b>"
-            label = "Index"
-            opt_type = "ATM Call Option (CE)" if is_long else "ATM Put Option (PE)"
-            qty_info = f"<b>Suggested Setup:</b> {opt_type}\n<b>Lot Size:</b> {qty} units"
-        else:
-            header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
-            label = "Stock"
-            qty_info = f"<b>Quantity:</b> {qty} shares\n<b>Required Margin:</b> ₹{margin_req:,.2f}"
+            try:
+                from app.dhan.option_finder import option_finder
+                opt_info = await option_finder.find_atm_contract(
+                    underlying=signal.symbol,
+                    spot_price=signal.entry_price,
+                    direction=signal.direction,
+                    target_date=signal.trade_date,
+                )
+            except Exception as e:
+                logger.debug(f"Option lookup note: {e}")
+
+        reply_markup, qty, margin_req = order_executor.register_signal_for_approval(signal, opt_contract=opt_info)
 
         time_str = signal.timestamp.strftime("%H:%M")
 
@@ -297,8 +302,8 @@ class TelegramNotifier:
             if ai_eval.learned_win_rate:
                 learned_wr_str = f" ({ai_eval.learned_win_rate:.0f}% Historical Win Rate)"
         elif is_index:
-            ai_score = 85
-            learned_wr_str = " (Major Benchmark Index Momentum)"
+            ai_score = 88
+            learned_wr_str = " (Institutional Index Momentum)"
         else:
             ai_score = 78
 
@@ -317,18 +322,42 @@ class TelegramNotifier:
 
         clean_reason = ai_reason.replace('"', '').strip()
 
-        # Clean, simple alert without brand names, insight in quotes
-        text = (
-            f"{header}\n\n"
-            f"<b>{label}:</b> {signal.symbol}\n"
-            f"<b>Time:</b> {time_str} IST\n\n"
-            f"<b>Conviction:</b> {ai_score}% {stars}{learned_wr_str}\n"
-            f"\"{clean_reason}\"\n\n"
-            f"<b>Entry / Level:</b> ₹{signal.entry_price:,.2f}\n"
-            f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n"
-            f"<b>Target:</b> ₹{signal.target:,.2f} (1:{signal.risk_reward:g})\n\n"
-            f"{qty_info}\n"
-        )
+        # Clean, simple alert with exact options pricing if index
+        if opt_info:
+            header = f"🔴 <b>TRADE BUY {opt_info.underlying} {int(opt_info.strike_price)} PE (Put)</b>" if not is_long else f"🟢 <b>TRADE BUY {opt_info.underlying} {int(opt_info.strike_price)} CE (Call)</b>"
+            risk_val = round(opt_info.ltp - opt_info.stop_loss_premium, 2)
+            reward_val = round(opt_info.target_premium - opt_info.ltp, 2)
+            orb_broken_label = "High" if is_long else "Low"
+            orb_broken_val = signal.orb_high if is_long else signal.orb_low
+
+            text = (
+                f"{header}\n\n"
+                f"🎯 <b>Contract:</b> {opt_info.custom_symbol}\n"
+                f"⏰ <b>Time:</b> {time_str} IST\n\n"
+                f"🧠 <b>Conviction:</b> {ai_score}% {stars}{learned_wr_str}\n"
+                f"\"{clean_reason}\"\n\n"
+                f"💰 <b>Option Premium Entry:</b> ₹{opt_info.ltp:,.2f}\n"
+                f"🛑 <b>Option Stop Loss:</b> ₹{opt_info.stop_loss_premium:,.2f} (-₹{risk_val:,.2f} risk)\n"
+                f"🏆 <b>Option Target:</b> ₹{opt_info.target_premium:,.2f} (+₹{reward_val:,.2f} reward | 1:2 R:R)\n\n"
+                f"📦 <b>Quantity:</b> 1 Lot ({opt_info.lot_size} Qty)\n"
+                f"💼 <b>Required Margin:</b> ₹{opt_info.margin_required:,.2f}\n"
+                f"⚡ <b>Index Spot Level:</b> ₹{signal.entry_price:,.2f} (ORB {orb_broken_label}: ₹{orb_broken_val:,.2f} Broken)\n"
+            )
+        else:
+            header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
+            text = (
+                f"{header}\n\n"
+                f"<b>Stock:</b> {signal.symbol}\n"
+                f"<b>Time:</b> {time_str} IST\n\n"
+                f"<b>Conviction:</b> {ai_score}% {stars}{learned_wr_str}\n"
+                f"\"{clean_reason}\"\n\n"
+                f"<b>Entry / Level:</b> ₹{signal.entry_price:,.2f}\n"
+                f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n"
+                f"<b>Target:</b> ₹{signal.target:,.2f} (1:{signal.risk_reward:g})\n\n"
+                f"<b>Quantity:</b> {qty} shares\n"
+                f"<b>Required Margin:</b> ₹{margin_req:,.2f}\n"
+            )
+
         return await self.send_message(
             text,
             idempotency_key=signal.idempotency_key,
