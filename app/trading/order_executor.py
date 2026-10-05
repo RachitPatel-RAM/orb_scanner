@@ -71,6 +71,23 @@ class DhanOrderExecutor:
             "created_at": datetime.now(),
         }
 
+        is_index = signal.symbol in ("NIFTY", "BANKNIFTY", "SENSEX") or str(signal.security_id) in ("13", "25", "51")
+        if is_index:
+            lot_map = {"NIFTY": 75, "BANKNIFTY": 30, "SENSEX": 20}
+            idx_lot = lot_map.get(signal.symbol, 75)
+            opt_type = "CE (Call)" if signal.direction == Direction.LONG else "PE (Put)"
+            strike = round(signal.entry_price / 50.0) * 50 if signal.symbol == "NIFTY" else round(signal.entry_price / 100.0) * 100
+            btn_text = f"{'🟢' if signal.direction == Direction.LONG else '🔴'} Trade {signal.symbol} {strike} {opt_type} ({idx_lot} Qty)"
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": btn_text, "callback_data": f"app:{sig_key}:1"},
+                        {"text": "✖ Dismiss", "callback_data": f"rej:{sig_key}"},
+                    ],
+                ]
+            }
+            return reply_markup, idx_lot, 4500.0
+
         # Format button with exact margin price fitting the user's capital
         if signal.direction == Direction.LONG:
             btn_text = f"🟢 Buy {qty} Qty (₹{margin_req:,.0f})"
@@ -112,6 +129,11 @@ class DhanOrderExecutor:
             f"Placing Dhan Order: {txn_type} {symbol} ({sec_id}) Lots={lot_multiplier} Qty={qty} Price={price} "
             f"SL={stop_loss} Target={target}"
         )
+
+        if symbol in ("NIFTY", "BANKNIFTY", "SENSEX") or sec_id in ("13", "25", "51"):
+            opt_type = "CE (Call)" if is_long else "PE (Put)"
+            strike = round(price / 50.0) * 50 if symbol == "NIFTY" else round(price / 100.0) * 100
+            return True, f"Index Setup Logged: {symbol} broke ORB ({'Long' if is_long else 'Short'}). Recommended strike: {strike} {opt_type}. Execute options contract via Dhan Option Chain / Web."
 
         try:
             # 1. Try Super Order (Bracket Order with Entry + SL + Target)
@@ -322,8 +344,9 @@ class DhanOrderExecutor:
                     opens = data.get("open", [])
                     volumes = data.get("volume", [1000] * len(closes))
                     if len(highs) >= 3:
-                        orb_high = highs[1]
-                        orb_low = lows[1]
+                        # 09:30-10:00 ORB window spans candles 1 and 2
+                        orb_high = max(highs[1], highs[2])
+                        orb_low = min(lows[1], lows[2])
                         orb_mid = round((orb_high + orb_low) / 2.0, 2)
                         latest_close = closes[-1]
                         latest_high = highs[-1]
@@ -451,6 +474,7 @@ class DhanOrderExecutor:
                 if resp.status_code == 200:
                     settings.dhan_access_token = token_val
                     auth.access_token = token_val
+                    self._dhan = None
 
                     from pathlib import Path
                     env_file = Path(".env")
@@ -461,6 +485,12 @@ class DhanOrderExecutor:
                             for l in txt.splitlines()
                         ]
                         env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+                    try:
+                        from app.dhan.live_feed import live_feed
+                        asyncio.create_task(live_feed.reconnect())
+                    except Exception:
+                        pass
 
                     await notifier.send_message(
                         "✅ <b>DhanHQ Access Token Updated & Validated!</b>\n\n"

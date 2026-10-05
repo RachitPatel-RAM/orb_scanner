@@ -108,10 +108,10 @@ class PaperTracker:
         # Active open trades by ID
         self.open_trades: Dict[int, PaperTrade] = {}
 
-    def open_trade_from_signal(self, signal: Signal) -> PaperTrade:
+    def open_trade_from_signal(self, signal: Signal, signal_id: Optional[int] = None) -> PaperTrade:
         """Creates and stores a virtual position from an ORB Signal."""
         trade_id = db.save_paper_trade(
-            signal_id=None,
+            signal_id=signal_id,
             trade_date=signal.trade_date.isoformat(),
             security_id=signal.security_id,
             symbol=signal.symbol,
@@ -124,7 +124,7 @@ class PaperTracker:
 
         trade = PaperTrade(
             id=trade_id,
-            signal_id=None,
+            signal_id=signal_id,
             trade_date=signal.trade_date,
             security_id=signal.security_id,
             symbol=signal.symbol,

@@ -270,12 +270,23 @@ class TelegramNotifier:
         reply_markup, qty, margin_req = order_executor.register_signal_for_approval(signal)
 
         is_long = signal.direction == Direction.LONG
-        header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
+        is_index = signal.symbol in ("NIFTY", "BANKNIFTY", "SENSEX") or str(signal.security_id) in ("13", "25", "51")
+
+        if is_index:
+            header = "🏛 <b>INDEX ORB BULLISH BREAKOUT</b>" if is_long else "🏛 <b>INDEX ORB BEARISH BREAKDOWN</b>"
+            label = "Index"
+            opt_type = "ATM Call Option (CE)" if is_long else "ATM Put Option (PE)"
+            qty_info = f"<b>Suggested Setup:</b> {opt_type}\n<b>Lot Size:</b> {qty} units"
+        else:
+            header = "🟢 <b>ORB LONG BREAKOUT</b>" if is_long else "🔴 <b>ORB SHORT BREAKOUT</b>"
+            label = "Stock"
+            qty_info = f"<b>Quantity:</b> {qty} shares\n<b>Required Margin:</b> ₹{margin_req:,.2f}"
+
         time_str = signal.timestamp.strftime("%H:%M")
 
         # 1. Morphological Candlestick & Learned Memory Conviction
         learned_wr_str = ""
-        if candle:
+        if candle and not is_index:
             ai_eval = ml_learner.calculate_conviction_score(
                 candle=candle,
                 direction=signal.direction,
@@ -285,6 +296,9 @@ class TelegramNotifier:
             ai_score = ai_eval.score
             if ai_eval.learned_win_rate:
                 learned_wr_str = f" ({ai_eval.learned_win_rate:.0f}% Historical Win Rate)"
+        elif is_index:
+            ai_score = 85
+            learned_wr_str = " (Major Benchmark Index Momentum)"
         else:
             ai_score = 78
 
@@ -306,15 +320,14 @@ class TelegramNotifier:
         # Clean, simple alert without brand names, insight in quotes
         text = (
             f"{header}\n\n"
-            f"<b>Stock:</b> {signal.symbol}\n"
+            f"<b>{label}:</b> {signal.symbol}\n"
             f"<b>Time:</b> {time_str} IST\n\n"
             f"<b>Conviction:</b> {ai_score}% {stars}{learned_wr_str}\n"
             f"\"{clean_reason}\"\n\n"
-            f"<b>Entry:</b> ₹{signal.entry_price:,.2f}\n"
+            f"<b>Entry / Level:</b> ₹{signal.entry_price:,.2f}\n"
             f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n"
             f"<b>Target:</b> ₹{signal.target:,.2f} (1:{signal.risk_reward:g})\n\n"
-            f"<b>Quantity:</b> {qty} shares\n"
-            f"<b>Required Margin:</b> ₹{margin_req:,.2f}\n"
+            f"{qty_info}\n"
         )
         return await self.send_message(
             text,

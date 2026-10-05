@@ -241,17 +241,18 @@ class LiveMarketFeed:
                 elif self.is_connected and (now - self._stats.get("connected_at", now)).total_seconds() > 60:
                     logger.warning("Feed connected but no ticks received after 60s.")
 
+    async def reconnect(self) -> None:
+        """Forces WebSocket to reconnect using current credentials."""
+        logger.info("Triggering Live Market Feed reconnect with latest credentials...")
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception as e:
+                logger.debug(f"Error closing socket during reconnect: {e}")
+
     async def start(self) -> None:
         """Connects to Dhan WebSocket with auto-reconnect and heartbeat loop."""
         self._running = True
-        client_id = auth.client_id
-        token = auth.access_token
-
-        if not client_id or not token:
-            raise ValueError("Dhan client_id and access_token required for live feed.")
-
-        # Query parameters per DhanHQ v2 API specs
-        ws_url = f"{self.FEED_URL}?version=2&token={token}&clientId={client_id}&authType=2"
 
         # Launch watchdog monitor
         monitor_task = asyncio.create_task(self._stale_feed_monitor())
@@ -260,6 +261,15 @@ class LiveMarketFeed:
         max_backoff = 60.0
 
         while self._running:
+            client_id = auth.client_id
+            token = auth.access_token
+
+            if not client_id or not token:
+                logger.warning("Dhan client_id or access_token missing. Waiting for token...")
+                await asyncio.sleep(5)
+                continue
+
+            ws_url = f"{self.FEED_URL}?version=2&token={token}&clientId={client_id}&authType=2"
             try:
                 logger.info(f"Connecting to Dhan Live Market Feed ({self.FEED_URL})...")
                 async with websockets.connect(

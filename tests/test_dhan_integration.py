@@ -110,3 +110,34 @@ async def test_telegram_retry_on_rate_limit():
         ok = await notifier.send_message("Test message")
         assert ok is True
         assert mock_post.call_count == 2
+
+
+def test_index_signal_and_live_engine_alias():
+    from main import LiveEngine
+    from app.trading.order_executor import order_executor
+    from app.storage.models import Signal, Direction
+
+    engine = LiveEngine()
+    assert hasattr(engine, "_on_signal_generated")
+    assert engine._on_signal_generated == engine._handle_signal
+
+    # Test NIFTY index signal registration
+    nifty_sig = Signal(
+        trade_date=date(2026, 10, 5),
+        security_id="13",
+        symbol="NIFTY",
+        timestamp=datetime(2026, 10, 5, 10, 15),
+        strategy="ORB-15",
+        direction=Direction.SHORT,
+        entry_price=24950.0,
+        orb_high=25100.0,
+        orb_low=25000.0,
+        stop_loss=25050.0,
+        target=24850.0,
+        risk_reward=2.0,
+        idempotency_key="IDX_NIFTY_2026-10-05_SHORT",
+    )
+    markup, lot_sz, margin = order_executor.register_signal_for_approval(nifty_sig)
+    assert lot_sz == 75
+    assert "PE (Put)" in str(markup)
+

@@ -59,11 +59,16 @@ class LiveEngine:
         )
         self._running = False
         self._daily_summary_sent = False
+        self._on_signal_generated = self._handle_signal
 
     async def stop(self) -> None:
         """Gracefully halts live scanner and disconnects feed."""
         self._running = False
         await live_feed.stop()
+
+    def _on_signal_generated(self, sig: Signal, candle: Optional[Candle] = None) -> None:
+        """Callback alias for processing signals."""
+        self._handle_signal(sig, candle=candle)
 
     def _on_1m_candle_closed(self, candle: Candle) -> None:
         """Triggered whenever a 1-minute candle finalizes."""
@@ -102,8 +107,10 @@ class LiveEngine:
 
     def _handle_signal(self, sig: Signal, candle: Optional[Candle] = None) -> None:
         """Processes a new ORB breakout signal with ML conviction verification."""
+        is_index = sig.symbol in ("NIFTY", "BANKNIFTY", "SENSEX", "NIFTY50") or str(sig.security_id) in ("13", "25", "51")
+
         # AI learned conviction & false-breakout trap check:
-        if candle:
+        if candle and not is_index:
             try:
                 from app.strategies.ml_learner import ml_learner
                 ai_eval = ml_learner.calculate_conviction_score(
@@ -144,7 +151,7 @@ class LiveEngine:
             return
 
         # Open virtual position in paper tracker
-        self.paper_tracker.open_trade_from_signal(sig)
+        self.paper_tracker.open_trade_from_signal(sig, signal_id=sig_id)
 
         # Dispatch Telegram alert (fail-safe async task with candle context)
         asyncio.create_task(notifier.send_signal(sig, candle=candle))
@@ -382,10 +389,20 @@ class LiveEngine:
         # Start close watchdog
         watchdog_task = asyncio.create_task(self._market_close_watchdog(len(instruments)))
 
-        # Start periodic token renewal watchdog (renews every 6 hours to keep token permanently active)
+        # Start periodic token renewal watchdog (renews immediately on startup & every 3 hours to keep token permanently active)
         async def _auto_renew_loop():
+            # Initial proactive renewal on startup
+            try:
+                ok_init, msg_init = await auth.renew_token()
+                if ok_init:
+                    logger.info(f"Startup Dhan token auto-renewal succeeded: {msg_init}")
+                else:
+                    logger.debug(f"Startup token renewal note: {msg_init}")
+            except Exception as e:
+                logger.debug(f"Startup token renewal check: {e}")
+
             while self._running:
-                await asyncio.sleep(6 * 3600)  # every 6 hours
+                await asyncio.sleep(3 * 3600)  # every 3 hours
                 if not self._running:
                     break
                 logger.info("Triggering scheduled background Dhan token renewal...")
@@ -398,7 +415,7 @@ class LiveEngine:
                     await notifier.send_message(
                         f"⚠️ <b>Dhan Token Auto-Renewal Alert</b>\n\n"
                         f"• {msg}\n"
-                        "• You can generate a new token from Dhan and paste it here directly using: <code>/token &lt;jwt&gt;</code>"
+                        "• You can generate a new token from Dhan and paste it here directly using: <code>/token &lt;jwt&gt;</code> or simply paste the raw token."
                     )
 
         renew_task = asyncio.create_task(_auto_renew_loop())

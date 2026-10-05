@@ -7,6 +7,7 @@ handles token expiry detection, and dispatches Telegram error notifications.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, Optional, Tuple
 import httpx
 
@@ -144,6 +145,11 @@ class DhanAuth:
                             for l in txt.splitlines()
                         ]
                         env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                    try:
+                        from app.dhan.live_feed import live_feed
+                        asyncio.create_task(live_feed.reconnect())
+                    except Exception:
+                        pass
                     logger.info(f"Dhan access token successfully renewed! New expiry: {expiry}")
                     return True, f"Token renewed successfully! Valid until: {expiry}"
                 return False, f"Unexpected response from RenewToken: {data}"
