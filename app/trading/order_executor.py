@@ -257,7 +257,7 @@ class DhanOrderExecutor:
                         cur_p = closes[-1] if closes else 0.0
                         diff_pts = cur_p - orb_mid
                         diff_pct = (diff_pts / orb_mid * 100.0) if orb_mid else 0.0
-                        status_sym = "🟢 Bullish (>Mid)" if diff_pts >= 0 else "🔴 Bearish (<Mid)"
+                        status_sym = "🟢 Bullish (&gt;Mid)" if diff_pts >= 0 else "🔴 Bearish (&lt;Mid)"
                         lines.append(
                             f"🔹 <b>{name}</b> ({exch})\n"
                             f"• <b>09:30–09:45 High:</b> ₹{orb_high:,.2f}\n"
