@@ -491,12 +491,14 @@ class LiveEngine:
 
         hourly_task = asyncio.create_task(_hourly_intelligence_loop())
 
-        # Daily Morning Schedule Watchdog:
+        # Daily Schedule Watchdog:
         # - 09:00 AM IST: System Health & Status Alert
         # - 09:14 AM IST: Final Pre-Market Briefing & Numerical Backtest Report
-        async def _morning_schedule_watchdog():
+        # - 23:30 PM IST: MCX Commodity Market Close & Performance Report
+        async def _daily_schedule_watchdog():
             sent_health_day = None
             sent_briefing_day = None
+            sent_commodity_eod_day = None
             while self._running:
                 await asyncio.sleep(15)
                 if not self._running:
@@ -529,7 +531,18 @@ class LiveEngine:
                         except Exception as e:
                             logger.debug(f"Error sending pre-market briefing alert: {e}")
 
-        morning_task = asyncio.create_task(_morning_schedule_watchdog())
+                    # 3. 23:30 PM MCX Commodity Market Close & Performance Report
+                    if time(23, 30) <= now_t.time() < time(23, 35) and sent_commodity_eod_day != c_date:
+                        try:
+                            from scripts.mcx_smc_analysis import generate_commodity_daily_audit
+                            comm_audit = await generate_commodity_daily_audit(trade_date=c_date)
+                            await notifier.send_commodity_eod_report(comm_audit)
+                            sent_commodity_eod_day = c_date
+                            logger.info("Dispatched 23:30 PM MCX Commodity Market Close EOD report.")
+                        except Exception as e:
+                            logger.debug(f"Error sending MCX commodity EOD report: {e}")
+
+        morning_task = asyncio.create_task(_daily_schedule_watchdog())
 
         # Continuous background 5-year empirical learning loop:
         # - Learns continuously & silently in background off-market/overnight

@@ -8,7 +8,7 @@ Analyzes CRUDEOIL & GOLD on 5-minute candles for:
 """
 
 import asyncio
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import sys
 from pathlib import Path
@@ -24,15 +24,25 @@ from app.dhan.auth import auth
 from app.storage.models import Candle, Direction
 from app.strategies.smc import smc_engine, SMCTradeSetup
 
-async def analyze_commodity(security_id: str, name: str, lot_size: int, tick_val: float):
+async def analyze_commodity(security_id: str, name: str, lot_size: int, tick_val: float, target_date: Optional[date] = None):
     headers = auth.get_headers()
     url = "https://api.dhan.co/v2/charts/intraday"
+    
+    if not target_date:
+        now_dt = datetime.now()
+        # If running in early morning (00:00 - 06:00), analyze the session that just closed
+        if now_dt.hour < 6:
+            target_date = (now_dt - timedelta(days=1)).date()
+        else:
+            target_date = now_dt.date()
+
+    t_str = target_date.strftime("%Y-%m-%d")
     payload = {
-        "securityId": security_id,
+        "securityId": str(security_id),
         "exchangeSegment": "MCX_COMM",
         "instrument": "FUTCOM",
-        "fromDate": "2026-10-05 09:00:00",
-        "toDate": "2026-10-05 23:30:00",
+        "fromDate": f"{t_str} 09:00:00",
+        "toDate": f"{t_str} 23:30:00",
         "interval": "5"
     }
 
@@ -203,15 +213,15 @@ async def generate_commodity_daily_audit(trade_date: Optional[date] = None) -> D
     """Generates comprehensive end-of-day MCX audit report across Crude Oil, Gold, and Silver."""
     all_trades = []
 
-    # 1. Crude Oil
-    crude_trades = await analyze_commodity("569900", "CRUDEOIL", lot_size=100, tick_val=1.0)
+    # 1. Crude Oil (Active Oct Contract 569900)
+    crude_trades = await analyze_commodity("569900", "CRUDEOIL", lot_size=100, tick_val=1.0, target_date=trade_date)
     if crude_trades:
         for t in crude_trades:
             t["symbol"] = "CRUDEOIL"
         all_trades.extend(crude_trades)
 
-    # 2. Gold
-    gold_trades = await analyze_commodity("483079", "GOLD", lot_size=1, tick_val=1.0)
+    # 2. Gold (Active Dec Contract 495213)
+    gold_trades = await analyze_commodity("495213", "GOLD", lot_size=1, tick_val=1.0, target_date=trade_date)
     if gold_trades:
         for t in gold_trades:
             t["symbol"] = "GOLD"
