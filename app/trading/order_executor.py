@@ -710,7 +710,7 @@ class DhanOrderExecutor:
         """
         from app.dhan.auth import auth
         from app.dhan.instruments import instrument_manager
-        from app.market.session import default_session
+        from app.market.session import default_session, IST_TZ
         from app.storage.models import Signal, Direction, Candle
 
         now_dt = default_session.now()
@@ -803,10 +803,15 @@ class DhanOrderExecutor:
 
                     if direction:
                         self._equity_alerted_today.add(alert_key)
+                        # Compute 20-period average volume for authentic volume expansion scoring
+                        vols_20 = [volumes[j] for j in range(max(0, closed_idx - 20), closed_idx)]
+                        avg_vol = (sum(vols_20) / len(vols_20)) if vols_20 else 1000.0
+
+                        ts_start = timestamps[closed_idx] if closed_idx < len(timestamps) else int(now_epoch)
                         c = Candle(
                             security_id=sid,
                             symbol=sym,
-                            timestamp=now_dt,
+                            timestamp=datetime.fromtimestamp(ts_start, tz=IST_TZ) if ts_start else now_dt,
                             open=closed_open,
                             high=closed_high,
                             low=closed_low,
@@ -814,6 +819,7 @@ class DhanOrderExecutor:
                             volume=float(volumes[closed_idx]) if volumes else 1000.0,
                             is_closed=True,
                         )
+                        setattr(c, "avg_volume_20", avg_vol)
                         sig = Signal(
                             trade_date=d,
                             security_id=sid,

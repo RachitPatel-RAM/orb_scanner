@@ -113,17 +113,19 @@ class LiveEngine:
         if candle and not is_index:
             try:
                 from app.strategies.ml_learner import ml_learner
+                avg_vol = getattr(candle, "avg_volume_20", None)
                 ai_eval = ml_learner.calculate_conviction_score(
                     candle=candle,
                     direction=sig.direction,
                     orb_high=sig.orb_high,
                     orb_low=sig.orb_low,
+                    avg_volume_20=avg_vol,
                 )
-                # Strict High-Probability Filter: only allow >= 65% conviction setups
-                if ai_eval.score < 65:
+                # Strict High-Probability Filter: only allow >= 75% conviction setups (SURE SHOT)
+                if ai_eval.score < 75:
                     logger.warning(
                         f"AI High-Probability Filter: Blocked {sig.symbol} {sig.direction.value} breakout "
-                        f"(Conviction: {ai_eval.score}%, Reasons: {ai_eval.reasons}). Only high-probability (>=65%) allowed."
+                        f"(Conviction: {ai_eval.score}%, Reasons: {ai_eval.reasons}). Only sure-shot high-probability (>=75%) allowed."
                     )
                     return
             except Exception as e:

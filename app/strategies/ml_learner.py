@@ -194,16 +194,26 @@ class MLLearner:
                 orb_delta -= 20.0
                 reasons.append(f"Over-extended Range Outlier ({width_pct:.1f}%) [-20]")
 
-        # 4. Timing
-        c_time = candle.timestamp.time()
-        if time(10, 0) <= c_time <= time(11, 30):
-            score += 10.0
-            time_delta += 10.0
-            reasons.append("Prime Institutional Morning Window [+10]")
-        elif time(12, 0) <= c_time <= time(13, 30):
-            score -= 10.0
-            time_delta -= 10.0
-            reasons.append("Midday Low Liquidity Window [-10]")
+        # 4. Timing (Strictly localized in IST Asia/Kolkata)
+        c_time = None
+        if hasattr(candle.timestamp, "time"):
+            import zoneinfo
+            IST_TZ = zoneinfo.ZoneInfo("Asia/Kolkata")
+            if getattr(candle.timestamp, "tzinfo", None) is None:
+                ts_dt = candle.timestamp.replace(tzinfo=zoneinfo.ZoneInfo("UTC")).astimezone(IST_TZ)
+            else:
+                ts_dt = candle.timestamp.astimezone(IST_TZ)
+            c_time = ts_dt.time()
+
+        if c_time:
+            if time(10, 0) <= c_time <= time(11, 30):
+                score += 10.0
+                time_delta += 10.0
+                reasons.append(f"Prime Institutional Morning Window ({c_time.strftime('%H:%M')} IST) [+10]")
+            elif time(12, 0) <= c_time <= time(13, 30):
+                score -= 10.0
+                time_delta -= 10.0
+                reasons.append("Midday Low Liquidity Window [-10]")
 
         # 5. Learned Stock Profile & Recency Intelligence ("navu shikhtu re, junu bhultu re")
         learned_win_rate = None
