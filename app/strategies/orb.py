@@ -71,6 +71,8 @@ class ORBStrategy:
         if key not in self.orb_candles_buffer:
             self.orb_candles_buffer[key] = []
         self.orb_candles_buffer[key].append(candle)
+        # Keep track of last closed candle during ORB window so first post-10:00 candle can evaluate immediately
+        self.prev_closed_5m[key] = candle
 
         # Update running levels
         if t_date not in self.daily_orb:
@@ -341,13 +343,9 @@ class ORBStrategy:
             self.prev_closed_5m[(t_date, sec_id)] = candle
             return None
 
-        # Get previous closed 5m candle
+        # Get previous closed candle
         prev_candle = self.prev_closed_5m.get((t_date, sec_id))
         self.prev_closed_5m[(t_date, sec_id)] = candle
-
-        if prev_candle is None:
-            # Need previous candle close to check crossing condition
-            return None
 
         # Calculate breakout levels with optional buffer
         buffer_pct = self.config.entry.breakout_buffer_pct / 100.0
@@ -355,15 +353,16 @@ class ORBStrategy:
         short_breakout_level = orb.low * (1.0 - buffer_pct)
 
         # TradingView parity conditions:
-        # LONG: close > ORB_HIGH and previous close <= ORB_HIGH
-        # SHORT: close < ORB_LOW and previous close >= ORB_LOW
-        long_condition = (candle.close > long_breakout_level) and (prev_candle.close <= long_breakout_level)
-        short_condition = (candle.close < short_breakout_level) and (prev_candle.close >= short_breakout_level)
+        # If prev_candle is None, default prev_close to orb.mid (inside the range)
+        # so Candle 4 (10:00 - 10:15) triggers immediately on close at 10:15!
+        prev_close = prev_candle.close if prev_candle is not None else orb.mid
+        long_condition = (candle.close > long_breakout_level) and (prev_close <= long_breakout_level)
+        short_condition = (candle.close < short_breakout_level) and (prev_close >= short_breakout_level)
 
         if self.debug_mode:
             logger.info(
                 f"[ORB DEBUG] Time: {candle.timestamp.strftime('%H:%M')} | Sym: {symbol} | "
-                f"Close: {candle.close:.2f} | PrevClose: {prev_candle.close:.2f} | "
+                f"Close: {candle.close:.2f} | PrevClose: {prev_close:.2f} | "
                 f"ORB_H: {orb.high:.2f} | ORB_L: {orb.low:.2f} | "
                 f"LongCond: {long_condition} | ShortCond: {short_condition}"
             )

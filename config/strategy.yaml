@@ -19,7 +19,7 @@ entry:
   direction: both # 'both', 'long', 'short'
 
 risk:
-  stop_method: opposite_or # 'opposite_or', 'orb_midpoint', 'fixed_percent'
+  stop_method: orb_midpoint # 'opposite_or', 'orb_midpoint', 'fixed_percent'
   fixed_stop_pct: 0.5
   risk_reward: 2.0
   min_tick_size: 0.05
