@@ -456,6 +456,21 @@ class LiveEngine:
 
         index_breakout_task = asyncio.create_task(_indices_breakout_loop())
 
+        # Start Equity Breakout Watchdog (Monitors F&O Universe for 15m ORB breakouts)
+        async def _equity_breakout_loop():
+            while self._running:
+                await asyncio.sleep(60)
+                if not self._running:
+                    break
+                now_t = default_session.now()
+                if default_session.is_market_open(now_t) and default_session.is_entry_allowed(now_t):
+                    try:
+                        await order_executor.check_equity_breakouts(self._on_signal_generated)
+                    except Exception as e:
+                        logger.debug(f"Error checking equity breakouts: {e}")
+
+        equity_breakout_task = asyncio.create_task(_equity_breakout_loop())
+
         # Start Live MCX Commodity SMC Scanner Loop (09:00 - 23:30 IST)
         async def _commodity_scanner_loop():
             while self._running:
@@ -624,6 +639,8 @@ class LiveEngine:
             approval_listener_task.cancel()
             indices_task.cancel()
             index_breakout_task.cancel()
+            equity_breakout_task.cancel()
+            commodity_scan_task.cancel()
             hourly_task.cancel()
             morning_task.cancel()
             learner_task.cancel()

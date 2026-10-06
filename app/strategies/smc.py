@@ -196,22 +196,70 @@ class SMCEngine:
         return True
 
     @staticmethod
+    def calculate_htf_trend(candles: List[Candle]) -> Tuple[Optional[Direction], float]:
+        """
+        Evaluates Higher Timeframe (HTF 15m/1H) trend & market structure:
+        - Calculates 20-period Exponential Moving Average (EMA-20).
+        - Evaluates Higher Highs / Higher Lows vs Lower Highs / Lower Lows across recent swings.
+        Returns:
+            (Direction.LONG / Direction.SHORT / None, ema_value)
+        """
+        if not candles or len(candles) < 5:
+            return None, 0.0
+
+        closes = [c.close for c in candles]
+        highs = [c.high for c in candles]
+        lows = [c.low for c in candles]
+
+        # Calculate EMA-20
+        period = min(20, len(closes))
+        k = 2.0 / (period + 1.0)
+        ema = closes[0]
+        for c_val in closes[1:]:
+            ema = (c_val * k) + (ema * (1.0 - k))
+
+        last_c = closes[-1]
+        recent_h = highs[-4:]
+        recent_l = lows[-4:]
+        is_lower_highs = recent_h[-1] <= recent_h[0] and recent_h[-2] <= recent_h[0]
+        is_lower_lows = recent_l[-1] <= recent_l[0]
+        is_higher_highs = recent_h[-1] >= recent_h[0] and recent_h[-2] >= recent_h[0]
+        is_higher_lows = recent_l[-1] >= recent_l[0]
+
+        if is_lower_highs and is_lower_lows:
+            return Direction.SHORT, round(ema, 2)
+        elif is_higher_highs and is_higher_lows:
+            return Direction.LONG, round(ema, 2)
+        elif last_c < ema and (is_lower_highs or is_lower_lows):
+            return Direction.SHORT, round(ema, 2)
+        elif last_c > ema and (is_higher_highs or is_higher_lows):
+            return Direction.LONG, round(ema, 2)
+        elif last_c < ema:
+            return Direction.SHORT, round(ema, 2)
+        elif last_c > ema:
+            return Direction.LONG, round(ema, 2)
+
+        return None, round(ema, 2)
+
+    @staticmethod
     def calculate_smc_conviction(
         candle: Candle,
         direction: Direction,
         fvg: Optional[FairValueGap] = None,
         sweep: Optional[LiquiditySweep] = None,
         avg_volume_20: Optional[float] = None,
+        htf_trend: Optional[Direction] = None,
     ) -> Tuple[int, str, str, List[str]]:
         """
         Rigorously calculates a 0-100% statistical conviction score based on verifiable candle math:
         - Base: 50 pts
+        - HTF 15m Alignment: +15 pts if aligned, -40 pts if counter-trend
         - Candle Body Displacement ratio: |Close - Open| / (High - Low)
           * >= 75% (Clean Marubozu): +25 pts
           * >= 60% (Solid Body): +15 pts
           * < 45% (Doji/Weak Body): -15 pts
         - Liquidity Sweep Counter-Wick Rejection:
-          * Counter-wick > 28%: -35 pts (Severe Fakeout Trap)
+          * Counter-wick > 25%: -35 pts (Severe Fakeout Trap)
           * Counter-wick <= 15%: +10 pts (Clean Trend Continuation)
         - Volume Expansion (if avg volume provided):
           * Vol >= 1.8x: +20 pts
@@ -219,7 +267,7 @@ class SMCEngine:
           * Vol < 0.8x: -15 pts (Low-Volume Fakeout)
         - FVG Imbalance Size & Confluence:
           * Valid unmitigated FVG with 50% midpoint: +15 pts
-        - High-Volume Session Window:
+        - High-Volume Session Window (Local Asia/Kolkata):
           * 17:00 – 22:30 IST (MCX Peak US Session): +10 pts
           * 12:00 – 15:00 IST (Midday dead chop): -15 pts
         """
@@ -235,7 +283,18 @@ class SMCEngine:
         lower_wick = (min(candle.open, candle.close) - candle.low) / c_range
         opp_wick = upper_wick if direction == Direction.LONG else lower_wick
 
-        # 1. Displacement Body Math
+        # 1. Higher Timeframe Alignment
+        htf_delta = 0.0
+        if htf_trend is not None:
+            if htf_trend == direction:
+                htf_delta = 15.0
+                reasons.append(f"15m HTF Trend Aligned ({htf_trend.value}) [+15]")
+            else:
+                htf_delta = -40.0
+                reasons.append(f"Counter-HTF Trap ({htf_trend.value} vs 5m {direction.value}) [-40]")
+        score += htf_delta
+
+        # 2. Displacement Body Math
         body_delta = 0.0
         if body_ratio >= 0.75:
             body_delta = 25.0
@@ -248,9 +307,9 @@ class SMCEngine:
             reasons.append(f"Weak Candle Body ({body_ratio*100:.0f}%) [-15]")
         score += body_delta
 
-        # 2. Counter-Wick / Fakeout Trap Math
+        # 3. Counter-Wick / Fakeout Trap Math
         wick_delta = 0.0
-        if opp_wick > 0.28:
+        if opp_wick > 0.25:
             wick_delta = -35.0
             reasons.append(f"Severe Counter-Wick Rejection ({opp_wick*100:.0f}%) [-35]")
         elif opp_wick <= 0.15:
@@ -258,7 +317,7 @@ class SMCEngine:
             reasons.append(f"Clean Trend Wick ({opp_wick*100:.0f}%) [+10]")
         score += wick_delta
 
-        # 3. Volume Expansion Math
+        # 4. Volume Expansion Math
         vol_delta = 0.0
         if avg_volume_20 and avg_volume_20 > 0:
             vol_ratio = candle.volume / avg_volume_20
@@ -273,19 +332,28 @@ class SMCEngine:
                 reasons.append(f"Low Volume Fakeout Risk ({vol_ratio:.1f}x) [-15]")
         score += vol_delta
 
-        # 4. FVG Confluence
+        # 5. FVG Confluence
         fvg_delta = 15.0 if fvg else 0.0
         if fvg:
             reasons.append(f"Unmitigated FVG Void ({fvg.size:.1f} pts) [+15]")
         score += fvg_delta
 
-        # 5. Session Timing Math
+        # 6. Session Timing Math (strictly localized in IST)
         session_delta = 0.0
-        c_time = candle.timestamp.time() if hasattr(candle.timestamp, "time") else None
+        c_time = None
+        if hasattr(candle.timestamp, "time"):
+            import zoneinfo
+            IST_TZ = zoneinfo.ZoneInfo("Asia/Kolkata")
+            if getattr(candle.timestamp, "tzinfo", None) is None:
+                ts_dt = candle.timestamp.replace(tzinfo=zoneinfo.ZoneInfo("UTC")).astimezone(IST_TZ)
+            else:
+                ts_dt = candle.timestamp.astimezone(IST_TZ)
+            c_time = ts_dt.time()
+
         if c_time:
             if time(17, 0) <= c_time <= time(22, 30) or time(10, 0) <= c_time <= time(11, 30):
                 session_delta = 10.0
-                reasons.append(f"Peak Liquidity Window ({c_time.strftime('%H:%M')}) [+10]")
+                reasons.append(f"Peak Liquidity Window ({c_time.strftime('%H:%M')} IST) [+10]")
             elif time(12, 0) <= c_time <= time(15, 0):
                 session_delta = -15.0
                 reasons.append("Midday Consolidation Chop [-15]")
@@ -301,6 +369,7 @@ class SMCEngine:
 
         calc_breakdown = (
             f"50(Base) "
+            f"{'+' if htf_delta>=0 else ''}{htf_delta:.0f}(HTF) "
             f"{'+' if body_delta>=0 else ''}{body_delta:.0f}(Displacement) "
             f"{'+' if wick_delta>=0 else ''}{wick_delta:.0f}(CounterWick) "
             f"{'+' if vol_delta>=0 else ''}{vol_delta:.0f}(Vol) "
@@ -317,16 +386,19 @@ class SMCEngine:
         swing_low: float,
         risk_reward_target: float = 2.0,
         strict_filters: bool = True,
+        avg_volume_20: Optional[float] = None,
+        htf_trend: Optional[Direction] = None,
     ) -> Optional[SMCTradeSetup]:
         """
         Strategy 1: Fair Value Gap Sweep & Reversal / Pullback.
-        1. Liquidity sweep of earlier high/low
-        2. Displacement movement creating a structure break (body >= 60-65%)
-        3. No large counter-wick rejection (opp wick <= 25%)
-        4. FVG formed in displacement move
-        5. Entry at 50% midpoint of the FVG
-        6. Stop loss beyond sweep extreme
-        7. Target: 2R
+        1. Higher Timeframe trend alignment (15m HTF filter)
+        2. Liquidity sweep of earlier high/low
+        3. Displacement movement creating a structure break (body >= 60-65%)
+        4. No large counter-wick rejection (opp wick <= 25%)
+        5. FVG formed in displacement move
+        6. Entry at 50% midpoint of the FVG
+        7. Stop loss beyond sweep extreme
+        8. Target: 2R
         """
         if len(candles) < 4:
             return None
@@ -340,14 +412,22 @@ class SMCEngine:
 
         latest_fvg = fvgs[-1]
 
+        # Strict HTF Rule: Never take 5m FVG opposing 15m HTF Trend
+        if strict_filters and htf_trend is not None and htf_trend != latest_fvg.direction:
+            logger.info(f"SMC HTF Filter: Blocked {symbol} 5m {latest_fvg.direction.value} setup opposing 15m HTF trend ({htf_trend.value}).")
+            return None
+
         # Calculate exact mathematical conviction
         score, level, calc_str, reasons = self.calculate_smc_conviction(
             candle=recent,
             direction=latest_fvg.direction,
             fvg=latest_fvg,
             sweep=sweep,
+            avg_volume_20=avg_volume_20,
+            htf_trend=htf_trend,
         )
-        if strict_filters and score < 70:
+        if strict_filters and score < 80:
+            return None
             return None
 
         # Bullish Setup
@@ -405,14 +485,17 @@ class SMCEngine:
         swing_high: float,
         swing_low: float,
         risk_reward_target: float = 2.0,
+        avg_volume_20: Optional[float] = None,
+        htf_trend: Optional[Direction] = None,
     ) -> Optional[SMCTradeSetup]:
         """
         Strategy 2: Hidden Liquidity Retest (Origin Candle Retest).
-        1. Price breaks earlier high / low with displacement
-        2. Identify origin candle that started the move
-        3. Entry at origin candle High (for Long) or Low (for Short)
-        4. Stop loss below/above swing low/high
-        5. Target: 2R to 3R
+        1. Higher Timeframe trend alignment (15m HTF filter)
+        2. Price breaks earlier high / low with displacement
+        3. Identify origin candle that started the move
+        4. Entry at origin candle High (for Long) or Low (for Short)
+        5. Stop loss below/above swing low/high
+        6. Target: 2R to 3R
         """
         if len(candles) < 4:
             return None
@@ -434,8 +517,23 @@ class SMCEngine:
         if breakout_idx is None or direction is None or breakout_idx == 0:
             return None
 
+        # Strict HTF Rule
+        if htf_trend is not None and htf_trend != direction:
+            logger.info(f"SMC HTF Filter: Blocked {symbol} 5m hidden liquidity {direction.value} setup opposing 15m HTF trend ({htf_trend.value}).")
+            return None
+
         # Origin candle is the candle directly preceding the displacement move
         origin_candle = candles[breakout_idx - 1]
+        breakout_candle = candles[breakout_idx]
+
+        score, level, calc_str, reasons = self.calculate_smc_conviction(
+            candle=breakout_candle,
+            direction=direction,
+            avg_volume_20=avg_volume_20,
+            htf_trend=htf_trend,
+        )
+        if score < 80:
+            return None
 
         if direction == Direction.LONG:
             entry_p = origin_candle.high
@@ -464,6 +562,8 @@ class SMCEngine:
                 target_price=target_p,
                 risk_reward=risk_reward_target,
                 origin=origin_info,
+                conviction_score=score,
+                calculation_breakdown=calc_str,
             )
         else:
             entry_p = origin_candle.low
@@ -492,6 +592,8 @@ class SMCEngine:
                 target_price=target_p,
                 risk_reward=risk_reward_target,
                 origin=origin_info,
+                conviction_score=score,
+                calculation_breakdown=calc_str,
             )
 
 
