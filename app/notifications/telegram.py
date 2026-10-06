@@ -312,8 +312,8 @@ class TelegramNotifier:
         return await self.send_message(msg, idempotency_key=f"premarket_briefing_{default_session.now().strftime('%Y%m%d')}")
 
     async def send_learning_tick(self) -> bool:
-        """Sends the silent hourly confirmation message requested by user."""
-        return await self.send_message("[LEARN INDIAN MARKET ✅, LEARN COMMODITY ✅]", idempotency_key=f"learned_tick_{default_session.now().strftime('%Y%m%d_%H')}")
+        """Sends the silent hourly confirmation message for Indian Market training."""
+        return await self.send_message("[LEARN INDIAN MARKET ✅]", idempotency_key=f"learned_tick_{default_session.now().strftime('%Y%m%d_%H')}")
 
 
     async def send_signal(self, signal: Signal, candle: Optional[Candle] = None) -> bool:

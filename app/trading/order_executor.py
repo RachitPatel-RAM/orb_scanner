@@ -505,23 +505,8 @@ class DhanOrderExecutor:
                 logger.debug(f"Error checking {sym} breakout: {e}")
 
     async def check_commodity_smc_setups(self) -> None:
-        """
-        Monitors active MCX commodities (Crude Oil, Gold, Silver) during market hours (09:00 - 23:30 IST).
-        Evaluates 5-minute Fair Value Gap (FVG) and Liquidity Sweep setups with:
-        1. Higher Timeframe (15m HTF) Market Structure & Trend Alignment.
-        2. Genuine Dynamic Conviction (Displacement, Clean Wick, Volume Surge, IST Peak Hours).
-        3. 45-minute Directional Cooldown to eliminate opposing whipsaws.
-        4. Strict High-Conviction threshold (>= 80%).
-        """
-        from app.dhan.auth import auth
-        from app.market.session import default_session, IST_TZ
-        from app.storage.models import Candle, Direction
-        from app.strategies.smc import smc_engine
-        from app.notifications.telegram import notifier
-
-        now_dt = default_session.now()
-        if not default_session.is_commodity_market_open(now_dt):
-            return
+        """Commodity scanner disabled by user preference (focused 100% on NSE Equity & Indices)."""
+        return
 
         now_epoch = now_dt.timestamp()
         today_str = now_dt.strftime("%Y-%m-%d")

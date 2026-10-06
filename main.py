@@ -473,21 +473,6 @@ class LiveEngine:
 
         equity_breakout_task = asyncio.create_task(_equity_breakout_loop())
 
-        # Start Live MCX Commodity SMC Scanner Loop (09:00 - 23:30 IST)
-        async def _commodity_scanner_loop():
-            while self._running:
-                await asyncio.sleep(45)  # Check every 45s for 5m closed candles
-                if not self._running:
-                    break
-                now_t = default_session.now()
-                if default_session.is_commodity_market_open(now_t):
-                    try:
-                        await order_executor.check_commodity_smc_setups()
-                    except Exception as e:
-                        logger.debug(f"Error in live commodity scanner loop: {e}")
-
-        commodity_scan_task = asyncio.create_task(_commodity_scanner_loop())
-
         # Start hourly Telegram 24h auto-delete cleanup loop
         async def _telegram_cleanup_loop():
             while self._running:
@@ -526,11 +511,9 @@ class LiveEngine:
         # Daily Schedule Watchdog:
         # - 09:00 AM IST: System Health & Status Alert
         # - 09:14 AM IST: Final Pre-Market Briefing & Numerical Backtest Report
-        # - 23:30 PM IST: MCX Commodity Market Close & Performance Report
         async def _daily_schedule_watchdog():
             sent_health_day = None
             sent_briefing_day = None
-            sent_commodity_eod_day = None
             while self._running:
                 await asyncio.sleep(15)
                 if not self._running:
@@ -563,24 +546,13 @@ class LiveEngine:
                         except Exception as e:
                             logger.debug(f"Error sending pre-market briefing alert: {e}")
 
-                    # 3. 23:30 PM MCX Commodity Market Close & Performance Report
-                    if time(23, 30) <= now_t.time() < time(23, 35) and sent_commodity_eod_day != c_date:
-                        try:
-                            from scripts.mcx_smc_analysis import generate_commodity_daily_audit
-                            comm_audit = await generate_commodity_daily_audit(trade_date=c_date)
-                            await notifier.send_commodity_eod_report(comm_audit)
-                            sent_commodity_eod_day = c_date
-                            logger.info("Dispatched 23:30 PM MCX Commodity Market Close EOD report.")
-                        except Exception as e:
-                            logger.debug(f"Error sending MCX commodity EOD report: {e}")
-
         morning_task = asyncio.create_task(_daily_schedule_watchdog())
 
         # Continuous background 5-year empirical learning loop:
-        # - Learns continuously & silently in background off-market/overnight (23:30 to 09:00 IST)
+        # - Learns continuously & silently in background off-market/overnight (15:30 to 09:14 IST)
         # - Saves all parameters, weights & models to Firebase Realtime DB & SQLite
-        # - Sends silent hourly confirmation: [LEARNED ✅] (no noisy reports)
-        # - Pauses heavy backtesting while either Indian or Commodity market is open so 100% focus is on live trading
+        # - Sends silent hourly confirmation: [LEARN INDIAN MARKET ✅]
+        # - Pauses heavy backtesting during active trading (09:15-15:30 IST) for 100% focus on execution
         async def _continuous_historical_learner_loop():
             from app.strategies.historical_learner import historical_learner
             await asyncio.sleep(20)
@@ -588,25 +560,21 @@ class LiveEngine:
 
             while self._running:
                 now_t = default_session.now()
-                is_any_open = default_session.is_any_market_open(now_t)
-
-                # During live market hours (NSE 09:15-15:30 OR MCX 09:00-23:30), stop deep training
-                if is_any_open:
+                # During live NSE market hours (09:15-15:30), stop deep training
+                if default_session.is_market_open(now_t):
                     await asyncio.sleep(60)
                     continue
 
                 try:
                     # In background, continuously train and calibrate ML conviction models across sectors (Indian Market)
                     res_nse = await historical_learner.run_historical_learning_cycle()
-                    # In background, continuously train and calibrate SMC models on MCX Commodities (Crude Oil, Gold, Silver)
-                    res_comm = await historical_learner.run_commodity_learning_cycle()
 
-                    # Hourly silent confirmation: send [LEARN INDIAN MARKET ✅, LEARN COMMODITY ✅]
+                    # Hourly silent confirmation: send [LEARN INDIAN MARKET ✅]
                     current_hour = now_t.hour
                     if current_hour != last_tick_hour:
                         await notifier.send_learning_tick()
                         last_tick_hour = current_hour
-                        logger.info(f"Dispatched hourly dual-market learning heartbeat at hour {current_hour}.")
+                        logger.info(f"Dispatched hourly Indian Market learning heartbeat at hour {current_hour}.")
                 except Exception as e:
                     logger.debug(f"Continuous background learning error: {e}")
 
@@ -642,7 +610,6 @@ class LiveEngine:
             indices_task.cancel()
             index_breakout_task.cancel()
             equity_breakout_task.cancel()
-            commodity_scan_task.cancel()
             hourly_task.cancel()
             morning_task.cancel()
             learner_task.cancel()
