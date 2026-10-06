@@ -314,17 +314,36 @@ class DhanOrderExecutor:
                     await asyncio.sleep(2)
 
     async def get_indices_orb_report(self, target_date: Optional[date] = None) -> str:
-        """Computes and formats the 09:30-09:45 ORB High/Low/Mid benchmark for NIFTY 50, BANKNIFTY, and SENSEX."""
+        """Alias for get_daily_indices_orb_message."""
+        return await self.get_daily_indices_orb_message(target_date)
+
+    async def get_daily_indices_orb_message(self, target_date: Optional[date] = None) -> str:
+        """Fetches live 09:30-09:45 ORB benchmarks and true real-time LTP from Dhan."""
         from app.dhan.auth import auth
         from app.market.session import default_session
         d = target_date or default_session.now().date()
         headers = auth.get_headers()
-        url = "https://api.dhan.co/v2/charts/intraday"
+        url_chart = "https://api.dhan.co/v2/charts/intraday"
+        url_ltp = "https://api.dhan.co/v2/marketfeed/ltp"
         indices = [
             ("13", "NIFTY 50", "NSE", "IDX_I"),
             ("25", "BANKNIFTY", "NSE", "IDX_I"),
             ("51", "SENSEX", "BSE", "IDX_I"),
         ]
+
+        # 1. Fetch instantaneous live LTP for indices
+        live_ltps = {}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r_ltp = await client.post(url_ltp, headers=headers, json={"IDX_I": [13, 25, 51]})
+                if r_ltp.status_code == 200:
+                    d_data = r_ltp.json().get("data", {}).get("IDX_I", {})
+                    for sid_str, val in d_data.items():
+                        live_ltps[sid_str] = float(val.get("last_price", 0.0))
+        except Exception as e:
+            logger.debug(f"Error fetching live index LTPs: {e}")
+
+        # 2. Fetch 09:30-09:45 Benchmark Range
         lines = []
         for sid, name, exch, seg in indices:
             payload = {
@@ -337,17 +356,19 @@ class DhanOrderExecutor:
             }
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
+                    resp = await client.post(url_chart, headers=headers, json=payload)
                 if resp.status_code == 200:
                     data = resp.json()
                     highs = data.get("high", [])
                     lows = data.get("low", [])
                     closes = data.get("close", [])
                     if len(highs) >= 2:
+                        # Benchmark Range: 09:30-09:45 IST (Candle 1)
                         orb_high = highs[1]
                         orb_low = lows[1]
                         orb_mid = round((orb_high + orb_low) / 2.0, 2)
-                        cur_p = closes[-1] if closes else 0.0
+                        # Use instantaneous live tick LTP if available, fallback to latest close
+                        cur_p = live_ltps.get(sid) or (closes[-1] if closes else orb_mid)
                         diff_pts = cur_p - orb_mid
                         diff_pct = (diff_pts / orb_mid * 100.0) if orb_mid else 0.0
                         status_sym = "🟢 Bullish (&gt;Mid)" if diff_pts >= 0 else "🔴 Bearish (&lt;Mid)"
@@ -369,15 +390,20 @@ class DhanOrderExecutor:
             f"🏛 <b>Daily Major Indices ORB Benchmark (10:00 AM IST)</b>\n"
             f"📅 <b>Date:</b> {dt_str} | <b>Benchmark Range:</b> 09:30–09:45 IST\n\n"
             + "\n".join(lines)
-            + "⚡ <i>Individual stock alerts trigger exclusively upon genuine ORB breakout.</i>"
+            + "⚡ <i>Individual stock alerts trigger exclusively upon confirmed 15m candle close breakout.</i>"
         )
 
     async def check_indices_breakouts(self, on_signal_callback) -> None:
-        """Monitors NIFTY 50, BANKNIFTY, and SENSEX for ORB breakouts and dispatches interactive signals."""
+        """
+        Monitors NIFTY 50, BANKNIFTY, and SENSEX for ORB breakouts.
+        STRICT REQUIREMENT: The 15-minute candle MUST fully close before a breakout is confirmed!
+        No premature mid-candle triggers allowed.
+        """
         from app.dhan.auth import auth
         from app.market.session import default_session
         from app.storage.models import Signal, Direction, Candle
         now_dt = default_session.now()
+        now_epoch = now_dt.timestamp()
         d = now_dt.date()
         headers = auth.get_headers()
         url = "https://api.dhan.co/v2/charts/intraday"
@@ -408,25 +434,42 @@ class DhanOrderExecutor:
                     lows = data.get("low", [])
                     closes = data.get("close", [])
                     opens = data.get("open", [])
+                    timestamps = data.get("timestamp", [])
                     volumes = data.get("volume", [1000] * len(closes))
-                    if len(highs) >= 3:
-                        # 09:30-10:00 ORB window spans candles 1 and 2
-                        orb_high = max(highs[1], highs[2])
-                        orb_low = min(lows[1], lows[2])
+
+                    if len(highs) >= 2:
+                        # Consistent 09:30-09:45 Benchmark Range (Candle 1)
+                        orb_high = highs[1]
+                        orb_low = lows[1]
                         orb_mid = round((orb_high + orb_low) / 2.0, 2)
-                        latest_close = closes[-1]
-                        latest_high = highs[-1]
-                        latest_low = lows[-1]
+
+                        # Find the LAST STRICTLY CLOSED 15m candle (must have elapsed full 900 seconds)
+                        closed_idx = None
+                        for i in range(len(timestamps) - 1, -1, -1):
+                            candle_start_ts = timestamps[i]
+                            # A 15-minute candle starting at T is only fully closed at T + 900s
+                            if now_epoch >= (candle_start_ts + 900):
+                                closed_idx = i
+                                break
+
+                        # Must be past the ORB period (i.e. closed_idx >= 2, after 10:00 AM)
+                        if closed_idx is None or closed_idx < 2:
+                            continue
+
+                        closed_close = closes[closed_idx]
+                        closed_high = highs[closed_idx]
+                        closed_low = lows[closed_idx]
+                        closed_open = opens[closed_idx]
 
                         direction = None
-                        if latest_close > orb_high:
+                        if closed_close > orb_high:
                             direction = Direction.LONG
                             sl = orb_mid
-                            target = round(latest_close + (latest_close - sl) * 2.0, 2)
-                        elif latest_close < orb_low:
+                            target = round(closed_close + (closed_close - sl) * 2.0, 2)
+                        elif closed_close < orb_low:
                             direction = Direction.SHORT
                             sl = orb_mid
-                            target = round(latest_close - (sl - latest_close) * 2.0, 2)
+                            target = round(closed_close - (sl - closed_close) * 2.0, 2)
 
                         if direction:
                             setattr(self, f"_idx_broken_{sym}_{d.isoformat()}", True)
@@ -434,11 +477,11 @@ class DhanOrderExecutor:
                                 security_id=sid,
                                 symbol=sym,
                                 timestamp=now_dt,
-                                open=opens[-1] if opens else latest_close,
-                                high=latest_high,
-                                low=latest_low,
-                                close=latest_close,
-                                volume=float(volumes[-1]) if volumes else 1000.0,
+                                open=closed_open,
+                                high=closed_high,
+                                low=closed_low,
+                                close=closed_close,
+                                volume=float(volumes[closed_idx]) if volumes else 1000.0,
                                 is_closed=True,
                             )
                             sig = Signal(
@@ -448,7 +491,7 @@ class DhanOrderExecutor:
                                 timestamp=now_dt,
                                 strategy="ORB-15",
                                 direction=direction,
-                                entry_price=latest_close,
+                                entry_price=closed_close,
                                 orb_high=orb_high,
                                 orb_low=orb_low,
                                 stop_loss=sl,
@@ -460,6 +503,136 @@ class DhanOrderExecutor:
                                 on_signal_callback(sig, candle=c)
             except Exception as e:
                 logger.debug(f"Error checking {sym} breakout: {e}")
+
+    async def check_commodity_smc_setups(self) -> None:
+        """
+        Monitors active MCX commodities (Crude Oil, Gold, Silver) during market hours (09:00 - 23:30 IST).
+        Evaluates 5-minute Fair Value Gap (FVG) and Liquidity Sweep setups with strict displacement.
+        Dispatches interactive 1-click SMC trade alerts to Telegram for high-conviction opportunities.
+        """
+        from app.dhan.auth import auth
+        from app.market.session import default_session
+        from app.storage.models import Candle, Direction
+        from app.strategies.smc import smc_engine
+        from app.notifications.telegram import notifier
+
+        now_dt = default_session.now()
+        if not default_session.is_commodity_market_open(now_dt):
+            return
+
+        now_epoch = now_dt.timestamp()
+        today_str = now_dt.strftime("%Y-%m-%d")
+        headers = auth.get_headers()
+        url = "https://api.dhan.co/v2/charts/intraday"
+
+        commodities = [
+            ("569900", "CRUDEOIL", "CRUDEOIL OCT FUT", 100),
+            ("495213", "GOLD", "GOLD DEC FUT", 1),
+            ("495214", "SILVER", "SILVER DEC FUT", 30),
+        ]
+
+        for sid, sym, full_name, lot_sz in commodities:
+            payload = {
+                "securityId": sid,
+                "exchangeSegment": "MCX_COMM",
+                "instrument": "FUTCOM",
+                "fromDate": f"{today_str} 09:00:00",
+                "toDate": f"{today_str} 23:30:00",
+                "interval": "5",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code != 200:
+                    continue
+
+                data = resp.json()
+                closes = data.get("close", [])
+                highs = data.get("high", [])
+                lows = data.get("low", [])
+                opens = data.get("open", [])
+                timestamps = data.get("timestamp", [])
+                volumes = data.get("volume", [1000] * len(closes))
+
+                if len(closes) < 10:
+                    continue
+
+                # Filter strictly closed 5m candles (must have elapsed full 300 seconds)
+                closed_candles = []
+                for i in range(len(closes)):
+                    ts_epoch = timestamps[i] if i < len(timestamps) else 0
+                    if now_epoch >= (ts_epoch + 300) or i < (len(closes) - 1):
+                        closed_candles.append(Candle(
+                            security_id=sid,
+                            symbol=sym,
+                            timestamp=datetime.fromtimestamp(ts_epoch) if ts_epoch else now_dt,
+                            open=float(opens[i]),
+                            high=float(highs[i]),
+                            low=float(lows[i]),
+                            close=float(closes[i]),
+                            volume=float(volumes[i]) if volumes else 1000.0,
+                            is_closed=True,
+                        ))
+
+                if len(closed_candles) < 10:
+                    continue
+
+                # Swing high and low across last 6 closed 5m candles (30-min window)
+                recent_window = closed_candles[-6:]
+                swing_h = max(c.high for c in recent_window)
+                swing_l = min(c.low for c in recent_window)
+
+                # Evaluate FVG Strategy
+                fvg_setup = smc_engine.evaluate_fvg_strategy(
+                    symbol=sym,
+                    candles=closed_candles[-6:],
+                    swing_high=swing_h,
+                    swing_low=swing_l,
+                    risk_reward_target=2.0,
+                    strict_filters=True,
+                )
+
+                # Evaluate Hidden Liquidity Strategy
+                hl_setup = smc_engine.evaluate_hidden_liquidity_strategy(
+                    symbol=sym,
+                    candles=closed_candles[-6:],
+                    swing_high=swing_h,
+                    swing_low=swing_l,
+                    risk_reward_target=2.0,
+                )
+
+                candidates = [s for s in [fvg_setup, hl_setup] if s is not None and getattr(s, "conviction_score", 0) >= 70]
+                for setup in candidates:
+                    idemp_key = f"SMC_{sym}_{setup.direction.value}_{today_str}_{int(setup.entry_price)}"
+                    if getattr(self, f"_comm_alert_{idemp_key}", False):
+                        continue
+
+                    # Mark as alerted
+                    setattr(self, f"_comm_alert_{idemp_key}", True)
+
+                    # Build actionable range (+/- 0.08%)
+                    p_delta = setup.entry_price * 0.0008
+                    min_r = round(setup.entry_price - p_delta, 2)
+                    max_r = round(setup.entry_price + p_delta, 2)
+                    actionable_range = f"₹{min_r:,.2f} – ₹{max_r:,.2f}"
+
+                    # Send to Telegram
+                    await notifier.send_smc_trade_alert(
+                        symbol=full_name,
+                        strategy_name=setup.strategy_name,
+                        direction=setup.direction,
+                        entry_price=setup.entry_price,
+                        stop_loss=setup.stop_loss,
+                        target_price=setup.target_price,
+                        risk_reward=2.0,
+                        lot_size=lot_sz,
+                        conviction_score=setup.conviction_score,
+                        timeframe="5m",
+                        logic_summary=setup.calculation_breakdown,
+                    )
+                    logger.info(f"Dispatched live MCX SMC trade alert for {full_name} ({setup.strategy_name}).")
+            except Exception as e:
+                logger.debug(f"Error checking commodity setups for {sym}: {e}")
 
     async def _handle_message_command(self, msg: Dict[str, Any]):
         """Processes interactive chat commands from user (balance, positions, status, orders)."""

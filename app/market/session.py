@@ -83,12 +83,24 @@ class MarketSession:
         return check_date not in NSE_HOLIDAYS
 
     def is_market_open(self, dt: Optional[datetime] = None) -> bool:
-        """Returns True if current time is within 09:15:00 and 15:30:00 on a weekday."""
+        """Returns True if current time is within 09:15:00 and 15:30:00 on a weekday (NSE Equity)."""
         check_dt = self.localize(dt or self.now())
         if not self.is_trading_day(check_dt.date()):
             return False
         t = check_dt.time()
         return self.market_open_time <= t < self.market_close_time
+
+    def is_commodity_market_open(self, dt: Optional[datetime] = None) -> bool:
+        """Returns True if current time is within 09:00:00 and 23:30:00 on a weekday (MCX Commodities)."""
+        check_dt = self.localize(dt or self.now())
+        if check_dt.weekday() >= 5:  # Saturday or Sunday
+            return False
+        t = check_dt.time()
+        return time(9, 0) <= t < time(23, 30)
+
+    def is_any_market_open(self, dt: Optional[datetime] = None) -> bool:
+        """Returns True if either NSE Equity or MCX Commodities market is actively open."""
+        return self.is_market_open(dt) or self.is_commodity_market_open(dt)
 
     def is_orb_period(self, dt: datetime) -> bool:
         """

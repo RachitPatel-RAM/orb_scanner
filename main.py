@@ -456,6 +456,21 @@ class LiveEngine:
 
         index_breakout_task = asyncio.create_task(_indices_breakout_loop())
 
+        # Start Live MCX Commodity SMC Scanner Loop (09:00 - 23:30 IST)
+        async def _commodity_scanner_loop():
+            while self._running:
+                await asyncio.sleep(45)  # Check every 45s for 5m closed candles
+                if not self._running:
+                    break
+                now_t = default_session.now()
+                if default_session.is_commodity_market_open(now_t):
+                    try:
+                        await order_executor.check_commodity_smc_setups()
+                    except Exception as e:
+                        logger.debug(f"Error in live commodity scanner loop: {e}")
+
+        commodity_scan_task = asyncio.create_task(_commodity_scanner_loop())
+
         # Start hourly Telegram 24h auto-delete cleanup loop
         async def _telegram_cleanup_loop():
             while self._running:
@@ -545,10 +560,10 @@ class LiveEngine:
         morning_task = asyncio.create_task(_daily_schedule_watchdog())
 
         # Continuous background 5-year empirical learning loop:
-        # - Learns continuously & silently in background off-market/overnight
+        # - Learns continuously & silently in background off-market/overnight (23:30 to 09:00 IST)
         # - Saves all parameters, weights & models to Firebase Realtime DB & SQLite
         # - Sends silent hourly confirmation: [LEARNED ✅] (no noisy reports)
-        # - Pauses heavy backtesting during live market (09:15 - 15:30) so 100% focus is on live candles & execution
+        # - Pauses heavy backtesting while either Indian or Commodity market is open so 100% focus is on live trading
         async def _continuous_historical_learner_loop():
             from app.strategies.historical_learner import historical_learner
             await asyncio.sleep(20)
@@ -556,10 +571,10 @@ class LiveEngine:
 
             while self._running:
                 now_t = default_session.now()
-                is_open = default_session.is_market_open(now_t)
+                is_any_open = default_session.is_any_market_open(now_t)
 
-                # During live market hours (09:15 - 15:30), stop deep training to focus 100% on live market
-                if is_open:
+                # During live market hours (NSE 09:15-15:30 OR MCX 09:00-23:30), stop deep training
+                if is_any_open:
                     await asyncio.sleep(60)
                     continue
 
