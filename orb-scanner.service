@@ -1,0 +1,16 @@
+[Unit]
+Description=24x7 ORB Live Scanner & Continuous Learner
+After=network.target
+
+[Service]
+Type=simple
+User=patelram5002
+WorkingDirectory=/home/patelram5002/paper_lab
+ExecStart=/home/patelram5002/paper_lab/.venv/bin/python main.py live
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/patelram5002/paper_lab/scanner.log
+StandardError=append:/home/patelram5002/paper_lab/scanner.log
+
+[Install]
+WantedBy=multi-user.target
