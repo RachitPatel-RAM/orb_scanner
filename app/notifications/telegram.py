@@ -445,6 +445,10 @@ class TelegramNotifier:
                 b_pct = (abs(candle.close - candle.open) / (candle.high - candle.low)) * 100.0
                 body_stat_line = f"🕯 <b>Displacement:</b> {b_pct:.0f}% Real Body Ratio\n"
 
+            t1 = round(signal.entry_price + (signal.risk_amount * 1.4) if is_long else signal.entry_price - (signal.risk_amount * 1.4), 2)
+            t2 = signal.target
+            t3 = round(signal.entry_price + (signal.risk_amount * 3.0) if is_long else signal.entry_price - (signal.risk_amount * 3.0), 2)
+
             text = (
                 f"{header}\n\n"
                 f"<b>Stock:</b> {signal.symbol}\n"
@@ -456,8 +460,10 @@ class TelegramNotifier:
                 f"\"{clean_reason}\"\n\n"
                 f"<b>Entry / Level:</b> ₹{signal.entry_price:,.2f}\n"
                 f"⚡ <b>Actionable Order Range:</b> ₹{stk_low:,.2f} – ₹{stk_high:,.2f}\n"
-                f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n"
-                f"<b>Target:</b> ₹{signal.target:,.2f} (1:{signal.risk_reward:g})\n\n"
+                f"<b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n\n"
+                f"🎯 <b>Target 1:</b> ₹{t1:,.2f} (1:1.4)\n"
+                f"🎯 <b>Target 2:</b> ₹{t2:,.2f} (1:{signal.risk_reward:g} | Main)\n"
+                f"🎯 <b>Target 3:</b> ₹{t3:,.2f} (1:3.0 | Runner)\n\n"
                 f"<b>Quantity:</b> {qty} shares\n"
                 f"<b>Required Margin:</b> ₹{margin_req:,.2f}\n"
             )

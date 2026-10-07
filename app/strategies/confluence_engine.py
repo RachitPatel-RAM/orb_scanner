@@ -52,6 +52,12 @@ class ConfluenceResult:
     structural_rr: Optional[float] = None
     target_milestone: Optional[str] = None
     sl_milestone: Optional[str] = None
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    target_3: Optional[float] = None
+    target_1_rr: Optional[float] = None
+    target_2_rr: Optional[float] = None
+    target_3_rr: Optional[float] = None
 
 
 class ConfluenceEngine:
@@ -342,7 +348,45 @@ class ConfluenceEngine:
 
                 struct_rr = round((entry_price - struct_target) / risk, 1)
 
-            summary_lines.append(f"Target: ₹{struct_target:.2f} (1:{struct_rr:g} | {target_milestone})")
+            # 3-Tier Multi-Target Computation (Target 1, Target 2, Target 3)
+            if direction == Direction.LONG:
+                t1 = round(entry_price + (risk * 1.4), 2)
+                if pivots and pivots.r1 > entry_price and 1.2 <= ((pivots.r1 - entry_price) / risk) <= 1.8:
+                    t1 = pivots.r1
+                
+                t2 = round(entry_price + (risk * 2.2), 2)
+                if pivots and pivots.r2 > entry_price and 1.8 <= ((pivots.r2 - entry_price) / risk) <= 2.6:
+                    t2 = pivots.r2
+                elif struct_target > t1:
+                    t2 = struct_target
+
+                t3 = round(entry_price + (risk * 3.2), 2)
+                if pivots and pivots.r3 > entry_price and 2.6 <= ((pivots.r3 - entry_price) / risk) <= 4.0:
+                    t3 = pivots.r3
+
+                t1_rr = round((t1 - entry_price) / risk, 1)
+                t2_rr = round((t2 - entry_price) / risk, 1)
+                t3_rr = round((t3 - entry_price) / risk, 1)
+            else:
+                t1 = round(entry_price - (risk * 1.4), 2)
+                if pivots and pivots.s1 < entry_price and 1.2 <= ((entry_price - pivots.s1) / risk) <= 1.8:
+                    t1 = pivots.s1
+                
+                t2 = round(entry_price - (risk * 2.2), 2)
+                if pivots and pivots.s2 < entry_price and 1.8 <= ((entry_price - pivots.s2) / risk) <= 2.6:
+                    t2 = pivots.s2
+                elif struct_target < t1:
+                    t2 = struct_target
+
+                t3 = round(entry_price - (risk * 3.2), 2)
+                if pivots and pivots.s3 < entry_price and 2.6 <= ((entry_price - pivots.s3) / risk) <= 4.0:
+                    t3 = pivots.s3
+
+                t1_rr = round((entry_price - t1) / risk, 1)
+                t2_rr = round((entry_price - t2) / risk, 1)
+                t3_rr = round((entry_price - t3) / risk, 1)
+
+            summary_lines.append(f"T1: ₹{t1:.2f} (1:{t1_rr:g}) | T2: ₹{t2:.2f} (1:{t2_rr:g}) | T3: ₹{t3:.2f} (1:{t3_rr:g})")
             summary_lines.append(f"Stop: ₹{struct_sl:.2f} ({sl_milestone})")
 
         return ConfluenceResult(
@@ -358,6 +402,12 @@ class ConfluenceEngine:
             structural_rr=struct_rr,
             target_milestone=target_milestone,
             sl_milestone=sl_milestone,
+            target_1=t1 if is_valid else None,
+            target_2=t2 if is_valid else None,
+            target_3=t3 if is_valid else None,
+            target_1_rr=t1_rr if is_valid else None,
+            target_2_rr=t2_rr if is_valid else None,
+            target_3_rr=t3_rr if is_valid else None,
         )
 
 
