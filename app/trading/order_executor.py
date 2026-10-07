@@ -848,11 +848,26 @@ class DhanOrderExecutor:
         raw_text = str(msg.get("text", "")).strip()
         text = raw_text.lower()
 
-        # Security check: only authorized telegram chat
-        if chat_id != str(settings.telegram_chat_id).strip():
-            return
-
         from app.notifications.telegram import notifier
+
+        # Security check: only authorized admin telegram chat can run control commands
+        if chat_id != str(settings.telegram_chat_id).strip():
+            ch_raw = settings.telegram_public_channel or "https://t.me/"
+            channel_link = ch_raw if ch_raw.startswith("http") else f"https://t.me/{ch_raw.lstrip('@')}"
+            welcome_msg = (
+                "👋 <b>Welcome to ORB Institutional Breakouts!</b>\n\n"
+                "🎯 <i>Verified Institutional &amp; Smart Money Concept (SMC) Setups for NSE Equities, Nifty &amp; Commodities.</i>\n\n"
+                "📢 <b>Join our Official Channel for real-time live breakout signals:</b>\n"
+                f"👉 <a href='{channel_link}'>Tap Here to Join Official Channel</a>\n\n"
+                "🔒 <i>Direct terminal execution and broker controls are restricted to Admin.</i>"
+            )
+            reply_btn = {
+                "inline_keyboard": [
+                    [{"text": "📢 Join Official Channel", "url": channel_link}]
+                ]
+            }
+            await notifier.send_message(welcome_msg, target_chat_id=chat_id, reply_markup=reply_btn)
+            return
 
         if text in ("/balance", "/funds", "/limit", "/limits", "balance", "funds", "limit", "limits"):
             try:

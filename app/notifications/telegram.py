@@ -69,6 +69,7 @@ class TelegramNotifier:
         text: str,
         idempotency_key: Optional[str] = None,
         reply_markup: Optional[Dict[str, Any]] = None,
+        target_chat_id: Optional[str] = None,
     ) -> bool:
         """
         Sends a Markdown-formatted message to Telegram.
@@ -83,9 +84,10 @@ class TelegramNotifier:
             logger.info(f"Duplicate Telegram alert suppressed for key: {idempotency_key}")
             return True
 
+        dest_chat_id = str(target_chat_id or self.chat_id)
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload: Dict[str, Any] = {
-            "chat_id": self.chat_id,
+            "chat_id": dest_chat_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,

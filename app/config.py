@@ -200,6 +200,9 @@ class AppSettings:
         self.firebase_storage_bucket: str = os.getenv("FIREBASE_STORAGE_BUCKET", "orbscanner-cb055.firebasestorage.app").strip()
         self.gemini_api_key: str = os.getenv("GEMINI_API_KEY", "").strip()
         self.groq_api_key: str = os.getenv("GROQ_API_KEY", "").strip()
+        self.telegram_public_channel: str = os.getenv("TELEGRAM_PUBLIC_CHANNEL", "").strip()
+        self.telegram_public_channel_id: str = os.getenv("TELEGRAM_PUBLIC_CHANNEL_ID", "").strip()
+        self.vip_channel_id: str = os.getenv("VIP_CHANNEL_ID", "").strip()
 
         # Validate timezone
         try:

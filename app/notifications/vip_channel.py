@@ -177,20 +177,32 @@ class VIPChannelManager:
             f"🔒 <i>Exclusive VIP Premium Alert</i>"
         )
 
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
-            "chat_id": self.channel_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.post(url, json=payload)
-                return r.status_code == 200
-        except Exception as e:
-            logger.error(f"Error broadcasting to VIP channel: {e}")
+        target_channels = []
+        if self.channel_id:
+            target_channels.append(self.channel_id)
+        if settings.telegram_public_channel_id and settings.telegram_public_channel_id not in target_channels:
+            target_channels.append(settings.telegram_public_channel_id)
+
+        if not target_channels:
             return False
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        sent_any = False
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for ch_id in target_channels:
+                try:
+                    payload = {
+                        "chat_id": ch_id,
+                        "text": text,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": True,
+                    }
+                    r = await client.post(url, json=payload)
+                    if r.status_code == 200:
+                        sent_any = True
+                except Exception as e:
+                    logger.error(f"Error broadcasting to channel {ch_id}: {e}")
+        return sent_any
 
 
 vip_manager = VIPChannelManager()
