@@ -175,7 +175,7 @@ class PaperTracker:
         candle_time = default_session.localize(candle.timestamp)
         closed_trades: List[PaperTrade] = []
 
-        matching_trades = [t for t in self.open_trades.values() if t.security_id == sec_id]
+        matching_trades = [t for t in self.open_trades.values() if t.security_id == sec_id and t.symbol == candle.symbol]
 
         for trade in matching_trades:
             # Check EOD square-off first if candle timestamp >= 15:25
@@ -233,12 +233,12 @@ class PaperTracker:
 
         return closed_trades
 
-    def update_with_tick(self, sec_id: str, ltp: float, tick_time: datetime) -> List[PaperTrade]:
+    def update_with_tick(self, sec_id: str, ltp: float, tick_time: datetime, symbol: Optional[str] = None) -> List[PaperTrade]:
         """Direct tick-level evaluation for live feed."""
         t_time = default_session.localize(tick_time)
         closed_trades: List[PaperTrade] = []
 
-        matching_trades = [t for t in self.open_trades.values() if t.security_id == sec_id]
+        matching_trades = [t for t in self.open_trades.values() if t.security_id == sec_id and (symbol is None or t.symbol == symbol)]
 
         for trade in matching_trades:
             if default_session.is_eod_squareoff(t_time):
