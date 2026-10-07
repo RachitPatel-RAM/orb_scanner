@@ -30,45 +30,47 @@ class VIPChannelManager:
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.bot_token and self.channel_id)
+        return bool(self.bot_token)
 
     async def create_subscription_invite(
         self,
         telegram_id: str,
         name: str,
         plan_months: int,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str], date]:
         """
         Registers a new subscriber and creates a single-use 1-member Telegram invite link
         valid for the user to join the channel.
+        Returns: (success, formatted_message, invite_link, expiry_date)
         """
-        if not self.is_configured:
-            return False, "VIP_CHANNEL_ID is not configured in .env yet."
-
         today = date.today()
-        # Approx days: 30 days per month
         duration_days = plan_months * 30
         expiry_date = today + timedelta(days=duration_days)
 
         invite_link = None
-        # Create single-use invite link via Telegram Bot API
-        try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/createChatInviteLink"
-            # Link expires in 48 hours for joining, but subscription lasts plan_months
-            link_expire_ts = int((datetime.now() + timedelta(hours=48)).timestamp())
-            payload = {
-                "chat_id": self.channel_id,
-                "name": f"VIP-{name}-{telegram_id[:6]}",
-                "expire_date": link_expire_ts,
-                "member_limit": 1,
-            }
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    invite_link = data.get("result", {}).get("invite_link")
-        except Exception as e:
-            logger.error(f"Error creating Telegram VIP invite link: {e}")
+        target_ch = self.channel_id or getattr(settings, "vip_channel_id", "") or os.getenv("VIP_CHANNEL_ID", "")
+
+        # Create single-use invite link via Telegram Bot API if channel is configured
+        if target_ch:
+            try:
+                url = f"https://api.telegram.org/bot{self.bot_token}/createChatInviteLink"
+                link_expire_ts = int((datetime.now() + timedelta(hours=48)).timestamp())
+                payload = {
+                    "chat_id": target_ch,
+                    "name": f"VIP-{name[:12]}-{str(telegram_id)[-4:]}",
+                    "expire_date": link_expire_ts,
+                    "member_limit": 1,
+                }
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        invite_link = data.get("result", {}).get("invite_link")
+            except Exception as e:
+                logger.error(f"Error creating Telegram VIP invite link: {e}")
+
+        if not invite_link:
+            invite_link = os.getenv("VIP_CHANNEL_LINK", "").strip() or "https://t.me/+2g9S5T6G5Js3OWQ1"
 
         # Save to database
         db.add_vip_subscriber(
@@ -85,10 +87,10 @@ class VIPChannelManager:
             f"👤 <b>Subscriber:</b> {name} (ID: <code>{telegram_id}</code>)\n"
             f"📅 <b>Plan:</b> {plan_months} Month(s) ({duration_days} Days)\n"
             f"⏳ <b>Valid Until:</b> {expiry_date.strftime('%d-%b-%Y')}\n\n"
-            f"🔗 <b>Private Invite Link:</b> {invite_link or 'Generated (Manual Add)'}\n"
-            f"⚠️ <i>Single-use link valid for 48 hours. Subscriber will be automatically evicted upon expiry.</i>"
+            f"🔗 <b>Private Invite Link:</b> {invite_link}\n"
+            f"⚠️ <i>Single-use link. Subscriber will be automatically evicted upon expiry.</i>"
         )
-        return True, msg
+        return True, msg, invite_link, expiry_date
 
     async def check_and_evict_expired_subscribers(self) -> int:
         """

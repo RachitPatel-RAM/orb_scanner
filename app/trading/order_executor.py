@@ -925,34 +925,150 @@ class DhanOrderExecutor:
 
                 await asyncio.sleep(0.08)
 
+    async def _send_photo(
+        self,
+        chat_id: Any,
+        photo: str,
+        caption: str = "",
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Sends a photo (URL or file_id) via Telegram Bot API."""
+        url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendPhoto"
+        payload: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "photo": photo,
+            "caption": caption,
+            "parse_mode": "HTML",
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, json=payload)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"Error sending photo to {chat_id}: {e}")
+            return False
+
     async def _handle_message_command(self, msg: Dict[str, Any]):
-        """Processes interactive chat commands from user (balance, positions, status, orders)."""
+        """Processes interactive chat commands from user (balance, positions, status, orders, VIP subscriptions)."""
         chat = msg.get("chat", {})
-        chat_id = str(chat.get("id", ""))
+        chat_id = str(chat.get("id", "")).strip()
+        from_user = msg.get("from", {})
+        user_id = str(from_user.get("id", chat_id)).strip()
+        user_name = from_user.get("first_name", "") or from_user.get("username", "Trader")
+        username = from_user.get("username", "")
+
         raw_text = str(msg.get("text", "")).strip()
-        text = raw_text.lower()
+        caption_text = str(msg.get("caption", "")).strip()
+        text = (raw_text or caption_text).lower()
 
         from app.notifications.telegram import notifier
+        from app.notifications.vip_channel import vip_manager
+        from app.storage.database import db
 
-        # Security check: only authorized admin telegram chat can run control commands
-        if chat_id != str(settings.telegram_chat_id).strip():
-            ch_raw = settings.telegram_public_channel or "https://t.me/"
-            channel_link = ch_raw if ch_raw.startswith("http") else f"https://t.me/{ch_raw.lstrip('@')}"
-            welcome_msg = (
-                "👋 <b>Welcome to ORB Institutional Breakouts!</b>\n\n"
-                "🎯 <i>Verified Institutional &amp; Smart Money Concept (SMC) Setups for NSE Equities, Nifty &amp; Commodities.</i>\n\n"
-                "📢 <b>Join our Official Channel for real-time live breakout signals:</b>\n"
-                f"👉 <a href='{channel_link}'>Tap Here to Join Official Channel</a>\n\n"
-                "🔒 <i>Direct terminal execution and broker controls are restricted to Admin.</i>"
+        admin_chat_id = str(settings.telegram_chat_id).strip()
+        is_admin = (user_id == admin_chat_id or chat_id == admin_chat_id)
+
+        # -------------------------------------------------------------
+        # 1. Non-Admin User Flows (VIP Subscription Portal)
+        # -------------------------------------------------------------
+        if not is_admin:
+            # Case A: User uploaded a payment screenshot
+            if "photo" in msg:
+                photo_list = msg.get("photo", [])
+                if photo_list:
+                    file_id = photo_list[-1]["file_id"]
+                    admin_caption = (
+                        "🔔 <b>NEW VIP PAYMENT SCREENSHOT SUBMISSION!</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 <b>Subscriber:</b> {user_name} ({f'@{username}' if username else 'No username'})\n"
+                        f"🆔 <b>Telegram ID:</b> <code>{user_id}</code>\n"
+                        f"⏰ <b>Received Time:</b> {datetime.now().strftime('%H:%M:%S')} IST\n\n"
+                        "⚠️ <i>Please verify transaction in your UPI app (patel.rachit@superyes / Rachit Ashish Patel) before approving.</i>"
+                    )
+                    admin_markup = {
+                        "inline_keyboard": [
+                            [
+                                {"text": "✅ Approve 1 Mo (₹1,499)", "callback_data": f"vapp:{user_id}:1:{user_name}"},
+                                {"text": "✅ Approve 3 Mo (₹3,499)", "callback_data": f"vapp:{user_id}:3:{user_name}"},
+                            ],
+                            [
+                                {"text": "✅ Approve 6 Mo (₹5,499)", "callback_data": f"vapp:{user_id}:6:{user_name}"},
+                                {"text": "✅ Approve 1 Yr (₹8,999)", "callback_data": f"vapp:{user_id}:12:{user_name}"},
+                            ],
+                            [
+                                {"text": "❌ Reject Payment", "callback_data": f"vrej:{user_id}"},
+                            ],
+                        ]
+                    }
+                    await self._send_photo(admin_chat_id, file_id, admin_caption, reply_markup=admin_markup)
+
+                    user_ack = (
+                        f"⏳ <b>Payment Screenshot Received!</b>\n\n"
+                        f"Thank you, <b>{user_name}</b>! Our verification desk is reviewing your payment.\n"
+                        "Your private single-use VIP invite link will be delivered directly here shortly! 🚀"
+                    )
+                    await notifier.send_message(user_ack, target_chat_id=chat_id)
+                    return
+
+            # Case B: Status Check
+            if text in ("/status", "status"):
+                sub = db.get_vip_subscriber(user_id)
+                if sub and sub.get("is_active"):
+                    exp_date = date.fromisoformat(sub["expiry_date"])
+                    days_left = max(0, (exp_date - date.today()).days)
+                    stat_msg = (
+                        "✅ <b>VIP MEMBERSHIP STATUS: ACTIVE</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 <b>Subscriber:</b> {sub.get('name', user_name)}\n"
+                        f"📅 <b>Plan:</b> {sub.get('plan_months', 1)} Month(s)\n"
+                        f"⏳ <b>Days Remaining:</b> <b>{days_left} Days</b>\n"
+                        f"🗓 <b>Valid Until:</b> {exp_date.strftime('%d-%b-%Y')}\n\n"
+                        "<i>You have full access to daily sure-shot institutional setups.</i>"
+                    )
+                else:
+                    stat_msg = (
+                        "ℹ️ <b>No Active VIP Subscription Found</b>\n\n"
+                        "Type <code>/vip</code> or tap the button below to join our VIP channel!"
+                    )
+                await notifier.send_message(stat_msg, target_chat_id=chat_id)
+                return
+
+            # Case C: VIP Plans & Subscription Menu
+            vip_desk_msg = (
+                "🌟 <b>INSTITUTIONAL VIP TRADING DESK</b> 🌟\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "🎯 <b>Daily 3–5 Sure-Shot Index &amp; Stock Calls</b>\n"
+                "• Nifty, BankNifty &amp; Sensex Expiry Special Setups\n"
+                "• Exact Entry Above, Stop Loss &amp; Multi-Targets (1, 2, 3)\n"
+                "• Zero-Loss Break-Even Trailing Alerts\n"
+                "• Institutional Smart Money (SMC) &amp; Volume Confluence\n\n"
+                "🤝 <b>A Note On Our Fees:</b>\n"
+                "<i>Covering your subscription fee in trade 1 is our commitment. We only charge modest fees to sustain our algorithmic server infrastructure and dedicated research desk.</i>\n\n"
+                "👇 <b>Choose your membership plan below:</b>"
             )
-            reply_btn = {
+            plans_markup = {
                 "inline_keyboard": [
-                    [{"text": "📢 Join Official Channel", "url": channel_link}]
+                    [
+                        {"text": "⭐ 1 Month - ₹1,499", "callback_data": "vplan:1:1499"},
+                        {"text": "🔥 3 Months - ₹3,499", "callback_data": "vplan:3:3499"},
+                    ],
+                    [
+                        {"text": "💎 6 Months - ₹5,499", "callback_data": "vplan:6:5499"},
+                        {"text": "👑 12 Months (1 Yr) - ₹8,999", "callback_data": "vplan:12:8999"},
+                    ],
+                    [
+                        {"text": "📊 Check My VIP Status", "callback_data": f"vstat:{user_id}"},
+                    ],
                 ]
             }
-            await notifier.send_message(welcome_msg, target_chat_id=chat_id, reply_markup=reply_btn)
+            await notifier.send_message(vip_desk_msg, target_chat_id=chat_id, reply_markup=plans_markup)
             return
 
+        # -------------------------------------------------------------
+        # 2. Authorized Admin Commands (Dhan Execution & Management)
+        # -------------------------------------------------------------
         if text in ("/balance", "/funds", "/limit", "/limits", "balance", "funds", "limit", "limits"):
             try:
                 headers = auth.get_headers()
@@ -1141,7 +1257,7 @@ class DhanOrderExecutor:
                 try:
                     months = int(parts[3])
                     from app.notifications.vip_channel import vip_manager
-                    ok, res_msg = await vip_manager.create_subscription_invite(tg_id, sub_name, months)
+                    ok, res_msg, _, _ = await vip_manager.create_subscription_invite(tg_id, sub_name, months)
                     await notifier.send_message(res_msg)
                 except ValueError:
                     await notifier.send_message("⚠️ Invalid months. Format: <code>/add_sub &lt;user_id&gt; &lt;name&gt; &lt;months&gt;</code>")
@@ -1201,23 +1317,105 @@ class DhanOrderExecutor:
         chat = message.get("chat", {})
         chat_id = str(chat.get("id", "")).strip() or str(settings.telegram_chat_id).strip()
         auth_chat_id = str(settings.telegram_chat_id).strip()
-        auth_vip_id = str(getattr(settings, "telegram_vip_channel_id", "") or "").strip()
+        data = str(cb_query.get("data", "")).strip()
+        message_id = message.get("message_id")
+        orig_text = message.get("text", "") or message.get("caption", "")
 
-        # Flexible auth: user ID matches, chat ID matches, or VIP channel matches
-        is_authorized = (
-            user_id == auth_chat_id
-            or chat_id == auth_chat_id
-            or (auth_vip_id and (chat_id == auth_vip_id or user_id == auth_vip_id))
-            or not auth_chat_id
-        )
-        if not is_authorized:
-            logger.warning(f"Unauthorized callback attempt from Telegram user ID: {user_id}, chat: {chat_id}")
-            await self._answer_callback(query_id, "Unauthorized click.", show_alert=True)
+        # -------------------------------------------------------------
+        # A. Public VIP Plan Selection & Status Callbacks (Open to all)
+        # -------------------------------------------------------------
+        if data.startswith("vplan:"):
+            parts = data.split(":")
+            months = parts[1]
+            amt = parts[2]
+            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=upi%3A%2F%2Fpay%3Fpa%3Dpatel.rachit%40superyes%26pn%3DRachit%2520Ashish%2520Patel%26cu%3DINR%26am%3D{amt}"
+            caption = (
+                "🚨 <b>10-MINUTE RESERVATION WINDOW</b> 🚨\n"
+                "⚠️ <i>This QR Code is dynamically generated and expires in 10:00 minutes!</i>\n\n"
+                "💳 <b>VIP MEMBERSHIP PAYMENT</b>\n"
+                "• <b>UPI ID:</b> <code>patel.rachit@superyes</code>\n"
+                "• <b>Name to Verify:</b> <b>Rachit Ashish Patel</b> ⚠️\n"
+                "  <i>(Please verify that your UPI app shows \"Rachit Ashish Patel\" before paying)</i>\n"
+                f"• <b>Plan:</b> {months} Month(s) VIP Access\n"
+                f"• <b>Amount:</b> <b>₹{amt}.00</b>\n\n"
+                "📌 <b>Quick 3-Step Process:</b>\n"
+                "1️⃣ Scan the QR Code above using Google Pay, PhonePe, or Paytm\n"
+                "2️⃣ Verify recipient name is <b>Rachit Ashish Patel</b>\n"
+                "3️⃣ Send the payment screenshot directly in this chat!\n\n"
+                "⚡ <i>Your single-use VIP invite link will be dispatched immediately upon verification! 🚀</i>"
+            )
+            await self._answer_callback(query_id, f"Generated QR for ₹{amt}")
+            await self._send_photo(chat_id, qr_url, caption)
             return
 
-        data = cb_query.get("data", "")
-        message_id = message.get("message_id")
-        orig_text = message.get("text", "")
+        if data.startswith("vstat"):
+            from app.storage.database import db
+            sub = db.get_vip_subscriber(user_id)
+            if sub and sub.get("is_active"):
+                exp_date = date.fromisoformat(sub["expiry_date"])
+                days_left = max(0, (exp_date - date.today()).days)
+                await self._answer_callback(query_id, f"Active VIP: {days_left} Days Left (Valid till {exp_date.strftime('%d-%b-%Y')})", show_alert=True)
+            else:
+                await self._answer_callback(query_id, "No active VIP found. Select a plan to join!", show_alert=True)
+            return
+
+        # -------------------------------------------------------------
+        # B. Strict Admin Security for Approvals & Trade Executions
+        # -------------------------------------------------------------
+        is_admin = (user_id == auth_chat_id or chat_id == auth_chat_id)
+        if not is_admin:
+            logger.warning(f"Unauthorized callback attempt from Telegram user ID: {user_id}, chat: {chat_id}")
+            await self._answer_callback(query_id, "Unauthorized. Only Admin can perform this action.", show_alert=True)
+            return
+
+        # Admin Approval for VIP Payment
+        if data.startswith("vapp:"):
+            from app.notifications.vip_channel import vip_manager
+            from app.notifications.telegram import notifier
+            parts = data.split(":")
+            target_uid = parts[1]
+            months = int(parts[2])
+            target_name = parts[3] if len(parts) > 3 else "Trader"
+
+            ok, msg, invite_link, exp_date = await vip_manager.create_subscription_invite(
+                telegram_id=target_uid,
+                name=target_name,
+                plan_months=months,
+            )
+
+            welcome_msg = (
+                "🎉 <b>PAYMENT VERIFIED! WELCOME TO VIP!</b> 🚀\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>Member:</b> {target_name}\n"
+                f"📅 <b>Plan:</b> {months} Month(s) Active Access\n"
+                f"⏳ <b>Valid Until:</b> {exp_date.strftime('%d-%b-%Y')}\n\n"
+                "🔗 <b>Your Exclusive Single-Use VIP Invite Link:</b>\n"
+                f"👉 {invite_link}\n\n"
+                "⚠️ <i>This single-use link is locked to your account. Do not share or forward it.</i>"
+            )
+            await notifier.send_message(welcome_msg, target_chat_id=target_uid)
+
+            new_text = f"{orig_text}\n\n✅ <b>APPROVED BY ADMIN!</b>\nVIP invite link dispatched to {target_name} (ID: <code>{target_uid}</code>)."
+            await self._edit_message(chat_id, message_id, new_text)
+            await self._answer_callback(query_id, "Subscriber Approved & Link Dispatched!")
+            return
+
+        # Admin Rejection for VIP Payment
+        if data.startswith("vrej:"):
+            from app.notifications.telegram import notifier
+            target_uid = data.split(":")[1]
+            rej_notice = (
+                "⚠️ <b>Payment Verification Notice</b>\n\n"
+                "We could not verify your submitted transaction. Please ensure:\n"
+                "1. Payment was sent to <code>patel.rachit@superyes</code> (Rachit Ashish Patel).\n"
+                "2. A clear screenshot displaying the UTR / Transaction Reference ID is submitted.\n\n"
+                "Type <code>/vip</code> to try again."
+            )
+            await notifier.send_message(rej_notice, target_chat_id=target_uid)
+            new_text = f"{orig_text}\n\n❌ <b>REJECTED BY ADMIN.</b>"
+            await self._edit_message(chat_id, message_id, new_text)
+            await self._answer_callback(query_id, "Payment Rejected.")
+            return
 
         # IMMEDIATELY answer callback to stop loading spinner on user's phone!
         await self._answer_callback(query_id, "Processing your order...")

@@ -621,21 +621,42 @@ class LiveEngine:
         hourly_task = asyncio.create_task(_hourly_intelligence_loop())
 
         # Daily Schedule Watchdog:
-        # - 09:00 AM IST: System Health & Status Alert
+        # - 08:30 AM IST: Global Market Pulse & VIP Pricing Card
+        # - 09:00 AM IST: Morning Greeting & System Health Alert
         # - 09:14 AM IST: Final Pre-Market Briefing & Numerical Backtest Report
+        # - 09:30 AM IST: Automatic Morning Greeting Cleanup
+        # - 18:00 PM IST: Evening P&L Recap & VIP Performance Showcase
+        # - 22:00 PM IST: Night Market Strategy & Game Plan
         async def _daily_schedule_watchdog():
+            sent_pulse_day = None
             sent_health_day = None
             sent_briefing_day = None
+            deleted_greeting_day = None
+            sent_evening_day = None
+            sent_night_day = None
+
             while self._running:
                 await asyncio.sleep(15)
                 if not self._running:
                     break
                 now_t = default_session.now()
                 c_date = now_t.date()
+                cur_time = now_t.time()
+
                 if default_session.is_trading_day(c_date):
-                    # 1. 09:00 AM Health Check
-                    if time(9, 0) <= now_t.time() < time(9, 10) and sent_health_day != c_date:
+                    # 1. 08:30 AM Global Market Pulse & VIP Pricing Card
+                    if time(8, 30) <= cur_time < time(8, 35) and sent_pulse_day != c_date:
                         try:
+                            await notifier.send_global_market_pulse()
+                            sent_pulse_day = c_date
+                            logger.info("Dispatched 08:30 AM Global Market Pulse & VIP Pricing Table.")
+                        except Exception as e:
+                            logger.debug(f"Error sending global market pulse: {e}")
+
+                    # 2. 09:00 AM Morning Greeting & Health Check
+                    if time(9, 0) <= cur_time < time(9, 5) and sent_health_day != c_date:
+                        try:
+                            await notifier.send_morning_market_briefing()
                             await notifier.send_morning_health_alert(
                                 stocks_count=len(instruments),
                                 dhan_connected=auth.has_credentials,
@@ -643,7 +664,7 @@ class LiveEngine:
                                 feed_connected=True,
                             )
                             sent_health_day = c_date
-                            logger.info("Dispatched 09:00 AM Morning Health Check alert.")
+                            logger.info("Dispatched 09:00 AM Morning Greeting & Health Check alert.")
                         except Exception as e:
                             logger.debug(f"Error sending morning health alert: {e}")
 
@@ -656,8 +677,8 @@ class LiveEngine:
                         except Exception as e:
                             logger.debug(f"VIP expiry audit note: {e}")
 
-                    # 2. 09:14 AM Pre-Market Final Briefing
-                    if time(9, 14) <= now_t.time() < time(9, 15) and sent_briefing_day != c_date:
+                    # 3. 09:14 AM Pre-Market Final Briefing
+                    if time(9, 14) <= cur_time < time(9, 15) and sent_briefing_day != c_date:
                         try:
                             from app.strategies.historical_learner import historical_learner
                             premarket_info = historical_learner.get_premarket_summary()
@@ -666,6 +687,33 @@ class LiveEngine:
                             logger.info("Dispatched 09:14 AM Pre-Market Final Briefing alert.")
                         except Exception as e:
                             logger.debug(f"Error sending pre-market briefing alert: {e}")
+
+                    # 4. 09:30 AM Cleanup Morning Greeting
+                    if time(9, 30) <= cur_time < time(9, 35) and deleted_greeting_day != c_date:
+                        try:
+                            await notifier.delete_morning_briefing()
+                            deleted_greeting_day = c_date
+                            logger.info("Cleaned up 09:00 AM morning greeting message.")
+                        except Exception as e:
+                            logger.debug(f"Error deleting morning greeting: {e}")
+
+                    # 5. 18:00 PM Evening P&L Showcase
+                    if time(18, 0) <= cur_time < time(18, 10) and sent_evening_day != c_date:
+                        try:
+                            await notifier.send_evening_pnl_showcase()
+                            sent_evening_day = c_date
+                            logger.info("Dispatched 18:00 PM Evening P&L Showcase.")
+                        except Exception as e:
+                            logger.debug(f"Error sending evening showcase: {e}")
+
+                    # 6. 22:00 PM Night Market Plan
+                    if time(22, 0) <= cur_time < time(22, 10) and sent_night_day != c_date:
+                        try:
+                            await notifier.send_night_market_plan()
+                            sent_night_day = c_date
+                            logger.info("Dispatched 22:00 PM Night Market Game Plan.")
+                        except Exception as e:
+                            logger.debug(f"Error sending night game plan: {e}")
 
         morning_task = asyncio.create_task(_daily_schedule_watchdog())
 

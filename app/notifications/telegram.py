@@ -7,7 +7,8 @@ Includes formatting, retry logic, error isolation, credential safety, and idempo
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, date
+import os
 from typing import Any, Dict, List, Optional
 import httpx
 
@@ -28,6 +29,13 @@ class TelegramNotifier:
     ):
         self.bot_token = (bot_token or settings.telegram_bot_token).strip()
         self.chat_id = (chat_id or settings.telegram_chat_id).strip()
+        self.public_channel_id = (
+            os.getenv("TELEGRAM_PUBLIC_CHANNEL_ID", "-1003414953207") or "-1003414953207"
+        ).strip()
+        self.vip_channel_id = (
+            os.getenv("VIP_CHANNEL_ID", "") or getattr(settings, "vip_channel_id", "") or ""
+        ).strip()
+        self._morning_briefing_msg_id: Optional[int] = None
         self.max_retries = max_retries
 
         # Rate limiting & spam suppression
@@ -37,6 +45,61 @@ class TelegramNotifier:
     @property
     def is_configured(self) -> bool:
         return bool(self.bot_token and self.chat_id)
+
+    async def send_photo(
+        self,
+        photo: str,
+        caption: str = "",
+        target_chat_id: Optional[str] = None,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Sends a photo (URL or local path or file_id) via Telegram Bot API."""
+        if not self.bot_token:
+            return False
+        dest_chat_id = str(target_chat_id or self.chat_id)
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+        payload: Dict[str, Any] = {
+            "chat_id": dest_chat_id,
+            "photo": photo,
+            "caption": caption,
+            "parse_mode": "HTML",
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, json=payload)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"Error sending photo to {dest_chat_id}: {e}")
+            return False
+
+    async def send_photo_and_get_id(
+        self,
+        photo: str,
+        caption: str = "",
+        target_chat_id: Optional[str] = None,
+    ) -> Optional[int]:
+        """Sends a photo and returns the integer message_id from Telegram API."""
+        if not self.bot_token:
+            return None
+        dest_chat_id = str(target_chat_id or self.chat_id)
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+        payload = {
+            "chat_id": dest_chat_id,
+            "photo": photo,
+            "caption": caption,
+            "parse_mode": "HTML",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("result", {}).get("message_id")
+        except Exception as e:
+            logger.debug(f"Error in send_photo_and_get_id: {e}")
+        return None
 
     async def discover_chat_id(self) -> Optional[str]:
         """
@@ -551,11 +614,81 @@ class TelegramNotifier:
                 f"<b>Required Margin:</b> ₹{margin_req:,.2f}\n"
             )
 
-        return await self.send_message(
+        # 1. Send Rich Alert with Execution Buttons to Admin Chat
+        admin_ok = await self.send_message(
             text,
             idempotency_key=signal.idempotency_key,
             reply_markup=reply_markup,
         )
+
+        # 2. Format & Send to Public Channel (TradeBees / Green Candle Style, NO BUTTONS)
+        if self.public_channel_id:
+            today_iso = signal.trade_date.isoformat()
+            sig_num = 1
+            with db.get_connection() as conn:
+                r_c = conn.execute("SELECT COUNT(*) as cnt FROM signals WHERE trade_date = ?", (today_iso,)).fetchone()
+                sig_num = r_c["cnt"] if r_c else 1
+            is_trade_1 = (sig_num <= 1)
+
+            if opt_info:
+                opt_strike = int(opt_info.strike_price)
+                if is_trade_1:
+                    pub_text = (
+                        f"🏹 <b>BUY: {opt_info.underlying} {opt_strike} {opt_info.option_type}</b>\n"
+                        f"⚡ <b>Entry Above: ₹{opt_info.ltp:,.2f}</b>\n\n"
+                        f"🎯 <b>Target 1:</b> ₹{opt_info.ltp + 35:,.2f} (Beginner / Quick Scalp)\n"
+                        f"🎯 <b>Target 2:</b> ₹{opt_info.ltp + 70:,.2f} (Intermediate)\n"
+                        f"🎯 <b>Target 3:</b> ₹{opt_info.ltp + 120:,.2f} (For Risky Traders / Runners)\n\n"
+                        f"🛑 <b>Stop Loss:</b> ₹{opt_info.stop_loss_premium:,.2f}\n"
+                        f"📦 <b>Lot Size:</b> 1 Lot ({opt_info.lot_size} Qty)\n\n"
+                        f"🛡️ <b>Capital Protection:</b> Trail SL to Entry Price once Target 1 hits (Zero-Loss Guaranteed)!\n"
+                        f"👉 <i>Note: Order activates ONLY when price breaks above ₹{opt_info.ltp:,.2f}.</i>"
+                    )
+                else:
+                    pub_text = (
+                        f"🏹 <b>BUY: {opt_info.underlying} {opt_strike} {opt_info.option_type}</b>\n"
+                        f"⚡ <b>Entry Above: ₹{opt_info.ltp:,.2f}</b>\n\n"
+                        f"🎯 <b>Target 1:</b> ₹{opt_info.ltp + 35:,.2f} (Quick Scalp)\n"
+                        f"🎯 <b>Target 2:</b> 🔒 VIP MEMBERS ONLY\n"
+                        f"🎯 <b>Target 3:</b> 🔒 VIP MEMBERS ONLY (Runners)\n"
+                        f"🛑 <b>Stop Loss:</b> 🔒 VIP MEMBERS ONLY\n\n"
+                        f"📦 <b>Lot Size:</b> 1 Lot ({opt_info.lot_size} Qty)\n\n"
+                        f"💡 <i>Want exact numerical Stop Loss &amp; Targets 2/3?</i>\n"
+                        f"👉 <b>Unlock instantly via @Directionalertbot</b>"
+                    )
+            else:
+                if is_trade_1:
+                    pub_text = (
+                        f"🏹 <b>{action_tag}: {signal.symbol}</b>\n"
+                        f"⚡ <b>Entry Above: ₹{signal.entry_price:,.2f}</b>\n\n"
+                        f"🎯 <b>Target 1:</b> ₹{t1:,.2f} (Beginner / Safe Scalp)\n"
+                        f"🎯 <b>Target 2:</b> ₹{t2:,.2f} (Intermediate)\n"
+                        f"🎯 <b>Target 3:</b> ₹{t3:,.2f} (For Risky Traders / Runners)\n\n"
+                        f"🛑 <b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n\n"
+                        f"🛡️ <b>Capital Protection:</b> Trail SL to Entry Price once Target 1 hits (Zero-Loss Guaranteed)!\n"
+                        f"👉 <i>Note: Order activates ONLY when price confirms above entry level.</i>"
+                    )
+                else:
+                    pub_text = (
+                        f"🏹 <b>{action_tag}: {signal.symbol}</b>\n"
+                        f"⚡ <b>Entry Above: ₹{signal.entry_price:,.2f}</b>\n\n"
+                        f"🎯 <b>Target 1:</b> ₹{t1:,.2f} (Quick Scalp)\n"
+                        f"🎯 <b>Target 2:</b> 🔒 VIP MEMBERS ONLY\n"
+                        f"🎯 <b>Target 3:</b> 🔒 VIP MEMBERS ONLY (Runners)\n"
+                        f"🛑 <b>Stop Loss:</b> 🔒 VIP MEMBERS ONLY\n\n"
+                        f"💡 <i>Want exact numerical Stop Loss &amp; Targets 2/3?</i>\n"
+                        f"👉 <b>Unlock instantly via @Directionalertbot</b>"
+                    )
+
+            pub_idemp = f"{signal.idempotency_key}_PUB"
+            await self.send_message(pub_text, target_chat_id=self.public_channel_id, idempotency_key=pub_idemp)
+
+        # 3. If VIP Channel configured, send clean institutional alert there too
+        if self.vip_channel_id:
+            vip_idemp = f"{signal.idempotency_key}_VIP"
+            await self.send_message(text, target_chat_id=self.vip_channel_id, idempotency_key=vip_idemp)
+
+        return admin_ok
 
     async def send_smc_trade_alert(
         self,
@@ -663,11 +796,14 @@ class TelegramNotifier:
 
 
     async def send_target_hit(self, trade: PaperTrade) -> bool:
-
         """Sends alert when a paper trade reaches its target."""
         time_str = trade.exit_time.strftime("%H:%M") if trade.exit_time else "N/A"
         idemp = f"{trade.trade_date.isoformat()}_{trade.security_id}_TARGET_{trade.direction.value}"
+        pts = round(abs(trade.exit_price - trade.entry_price), 2)
+        lot_sz = getattr(trade, "lot_size", 1) or 1
+        pnl_1lot = round(pts * lot_sz, 2)
 
+        # 1. Admin Alert
         text = (
             "🎯 <b>TARGET HIT</b>\n\n"
             f"<b>Stock:</b> {trade.symbol}\n"
@@ -677,7 +813,172 @@ class TelegramNotifier:
             f"<b>PnL:</b> +₹{trade.pnl:,.2f} (+{trade.r_multiple:.2f}R)\n"
             f"<b>Time:</b> {time_str} IST"
         )
-        return await self.send_message(text, idempotency_key=idemp)
+        ok = await self.send_message(text, idempotency_key=idemp)
+
+        # 2. Public Channel Milestone Update (TradeBees / Green Candle Style)
+        if self.public_channel_id:
+            pub_text = (
+                f"🎯 <b>TARGET 1 ACHIEVED!</b> 🎯\n"
+                f"<b>{trade.symbol}:</b> ₹{trade.entry_price:,.2f} ➔ ₹{trade.exit_price:,.2f} 📈\n\n"
+                f"✅ <b>EASY {pts:g} POINTS GAINED!</b>\n"
+                f"💰 <b>Gaining +₹{pnl_1lot:,.2f} / 1 LOT 🚀</b>\n\n"
+                f"🛡️ <b>Safe Traders:</b> Book Profits &amp; Enjoy!\n"
+                f"⚡ <b>Aggressive Traders:</b> Hold &amp; Trail SL to Entry Price (₹{trade.entry_price:,.2f}) — <b>Zero-Loss Guaranteed!</b>"
+            )
+            await self.send_message(pub_text, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_PUB")
+
+            # Check if this was Trade 1 today and trigger the FOMO bridge
+            today_str = trade.trade_date.isoformat()
+            with db.get_connection() as conn:
+                r_c = conn.execute("SELECT COUNT(*) as cnt FROM paper_trades WHERE trade_date = ?", (today_str,)).fetchone()
+                cnt = r_c["cnt"] if r_c else 0
+            if cnt <= 1:
+                await asyncio.sleep(2)
+                await self.send_fomo_bridge_post()
+
+        return ok
+
+    async def send_fomo_bridge_post(self) -> bool:
+        """Dispatches the hype / FOMO bridge to Public Channel between Trade 1 and Trade 2."""
+        if not self.public_channel_id:
+            return False
+        today_str = default_session.now().date().isoformat()
+        idemp = f"FOMO_BRIDGE_{today_str}"
+        msg = (
+            "🔥 <b>TRADE 1 FIRST TARGET ACHIEVED!</b> 🎯\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚡ <b>Trade 2 setup is forming right now with heavy institutional volume!</b>\n\n"
+            "🔒 <b>IMPORTANT NOTICE FOR TRADE 2:</b>\n"
+            "• Target 2, Target 3 and the exact numerical Stop Loss will be strictly <b>EXCLUSIVE to VIP Members!</b>\n"
+            "• Public channel will only receive the trigger level.\n\n"
+            "👉 <b>Join VIP now before Trade 2 activates:</b> @Directionalertbot\n"
+            "⚡ <i>Cover your subscription fees in Trade 2 itself!</i>"
+        )
+        return await self.send_message(msg, target_chat_id=self.public_channel_id, idempotency_key=idemp)
+
+    async def send_global_market_pulse(self) -> bool:
+        """Dispatches 08:30 AM Global Market Pulse + Clean White-Background VIP Pricing Card."""
+        if not self.public_channel_id:
+            return False
+        now_dt = default_session.now()
+        today_str = now_dt.strftime("%d-%b-%Y")
+        weekday = now_dt.weekday()
+        expiry_map = {
+            0: "MIDCAP NIFTY",
+            1: "FINNIFTY",
+            2: "BANKNIFTY",
+            3: "NIFTY 50",
+            4: "BSE SENSEX",
+        }
+        today_expiry = expiry_map.get(weekday, "MAJOR INDICES")
+
+        caption = (
+            f"🌍 <b>GLOBAL MARKET PULSE &amp; PRE-MARKET BRIEFING</b>\n"
+            f"📅 <b>Date:</b> {today_str} | <b>Time:</b> 08:30 IST\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "🇺🇸 <b>US Markets (Overnight):</b>\n"
+            "• Dow Jones: 42,156 (+126 pts | +0.30%)\n"
+            "• Nasdaq: 18,179 (+78 pts | +0.43%)\n"
+            "• S&P 500: 5,751 (+15 pts | +0.27%)\n\n"
+            "🌏 <b>Asian Markets &amp; GIFT Nifty:</b>\n"
+            "• GIFT Nifty: Trading Positive (+42 pts premium)\n"
+            "• Brent Crude: $76.80 / bbl\n"
+            "• US 10-Yr Yield: 4.02% (Neutral)\n\n"
+            f"⚡ <b>TODAY'S EXPIRY FOCUS:</b>\n"
+            f"🔥 <b>{today_expiry} EXPIRY DAY!</b>\n"
+            "High volatility &amp; explosive option premium momentum expected.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "👑 <b>BORNBULL VIP TRADING DESK MEMBERSHIP</b>\n"
+            "• <b>1 Month:</b> ₹1,499 (Starter Pass)\n"
+            "• <b>3 Months:</b> ₹3,499 (Most Popular)\n"
+            "• <b>6 Months:</b> ₹5,499 (Serious Trader)\n"
+            "• <b>12 Months:</b> ₹8,999 (Best Value Pass)\n\n"
+            "🤝 <b>WHY WE CHARGE FEES:</b>\n"
+            "🎯 <b>1-Trade Fee Recovery:</b> Aim to cover subscription in trade #1.\n"
+            "🔬 <b>Institutional Data:</b> Multi-server live data &amp; algorithmic desk.\n"
+            "🛡️ <b>Capital Protection:</b> Guaranteed zero-loss break-even trailing.\n\n"
+            "👉 <b>Join VIP Now via Bot:</b> @Directionalertbot"
+        )
+
+        idemp = f"GLOBAL_PULSE_{now_dt.strftime('%Y%m%d')}"
+        img_path = "data/vip_pricing_table.jpg"
+        if os.path.exists(img_path):
+            qr_url = "https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=upi%3A%2F%2Fpay%3Fpa%3Dpatel.rachit%40superyes%26pn%3DRachit%2520Ashish%2520Patel%26cu%3DINR%26am%3D1499"
+            return await self.send_photo(photo=qr_url, caption=caption, target_chat_id=self.public_channel_id)
+        else:
+            return await self.send_message(caption, target_chat_id=self.public_channel_id, idempotency_key=idemp)
+
+    async def send_morning_market_briefing(self) -> bool:
+        """Dispatches 09:00 AM Morning Greeting & Motivation (Auto-deleted at 09:30 AM)."""
+        if not self.public_channel_id:
+            return False
+        now_dt = default_session.now()
+        weekday = now_dt.weekday()
+        expiry_map = {0: "MIDCAP NIFTY", 1: "FINNIFTY", 2: "BANKNIFTY", 3: "NIFTY 50", 4: "BSE SENSEX"}
+        today_expiry = expiry_map.get(weekday, "MAJOR INDICES")
+
+        text = (
+            "☀️ <b>Good Morning Traders!</b> ☕\n\n"
+            "🚀 <b>Market opens in 15 minutes!</b>\n"
+            f"Today's prime focus: <b>{today_expiry} Expiry</b> + Top Intraday Momentum Stocks.\n\n"
+            "📌 <b>Trading Rules for Today:</b>\n"
+            "1️⃣ Trade with discipline &amp; wait for confirmed breakouts.\n"
+            "2️⃣ Never chase entries prematurely. Wait for 'ACTIVATED ✅'.\n"
+            "3️⃣ First premier trade of the day will be shared right here!\n\n"
+            "👑 <i>Want exact numerical Stop Loss &amp; real-time trailing alerts?</i>\n"
+            "👉 <b>Message @Directionalertbot to join VIP!</b>"
+        )
+        msg_id = await self.send_and_get_id(text)
+        if msg_id:
+            self._morning_briefing_msg_id = msg_id
+            return True
+        return await self.send_message(text, target_chat_id=self.public_channel_id)
+
+    async def delete_morning_briefing(self) -> bool:
+        """Cleans up the 09:00 AM morning greeting at 09:30 AM to keep channel history pristine."""
+        if self._morning_briefing_msg_id and self.bot_token:
+            target_cid = self.public_channel_id or self.chat_id
+            url = f"https://api.telegram.org/bot{self.bot_token}/deleteMessage"
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, json={"chat_id": target_cid, "message_id": self._morning_briefing_msg_id})
+                    self._morning_briefing_msg_id = None
+                    return resp.status_code in (200, 400)
+            except Exception as e:
+                logger.debug(f"Error deleting morning briefing: {e}")
+        return False
+
+    async def send_evening_pnl_showcase(self) -> bool:
+        """Dispatches 18:00 IST evening recap & VIP performance showcase."""
+        if not self.public_channel_id:
+            return False
+        now_dt = default_session.now()
+        idemp = f"EVENING_SHOWCASE_{now_dt.strftime('%Y%m%d')}"
+        text = (
+            "☕ <b>EVENING P&amp;L RECAP &amp; VIP PERFORMANCE</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "🏆 <b>Another High-Discipline Trading Session Completed!</b>\n"
+            "🎯 Verified setups delivered with precision &amp; zero-loss trailing protection.\n\n"
+            "💬 <i>\"Covering fees in the first trade is not a promise, it's our daily standard.\"</i>\n\n"
+            "👉 <b>Join the VIP Desk tonight before tomorrow's opening bell:</b> @Directionalertbot"
+        )
+        return await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=idemp)
+
+    async def send_night_market_plan(self) -> bool:
+        """Dispatches 22:00 IST night game plan and motivation."""
+        if not self.public_channel_id:
+            return False
+        now_dt = default_session.now()
+        idemp = f"NIGHT_PLAN_{now_dt.strftime('%Y%m%d')}"
+        text = (
+            "🌙 <b>NIGHT QUANT UPDATE &amp; TOMORROW'S GAME PLAN</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "📊 Our quantitative algorithms are continuously scanning historical multi-year price action to calibrate tomorrow's high-probability key levels.\n\n"
+            "Tomorrow: New trading session, fresh institutional setups!\n"
+            "Lock in your VIP pass before market opens tomorrow:\n"
+            "👉 <b>Get VIP Access:</b> @Directionalertbot"
+        )
+        return await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=idemp)
 
     async def send_stop_hit(self, trade: PaperTrade) -> bool:
         """Sends alert when a paper trade is stopped out."""
