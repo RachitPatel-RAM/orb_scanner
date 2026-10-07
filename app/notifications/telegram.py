@@ -411,12 +411,24 @@ class TelegramNotifier:
             stk_high = round(signal.entry_price + stock_buffer, 2)
             action_tag = "BUY" if is_long else "SELL"
 
+            vol_stat_line = ""
+            if candle and getattr(candle, "avg_volume_20", None):
+                vr = candle.volume / candle.avg_volume_20
+                vol_stat_line = f"📊 <b>Relative Volume:</b> {vr:.1f}x (vs 20-candle avg)\n"
+
+            body_stat_line = ""
+            if candle and (candle.high - candle.low) > 0:
+                b_pct = (abs(candle.close - candle.open) / (candle.high - candle.low)) * 100.0
+                body_stat_line = f"🕯 <b>Displacement:</b> {b_pct:.0f}% Real Body Ratio\n"
+
             text = (
                 f"{header}\n\n"
                 f"<b>Stock:</b> {signal.symbol}\n"
                 f"<b>Action:</b> {action_tag}\n"
                 f"<b>Time:</b> {time_str} IST\n\n"
-                f"<b>Conviction:</b> {ai_score}% {stars}{learned_wr_str}\n"
+                f"🧠 <b>Confirmation:</b> {stars} Verified Institutional Setup{learned_wr_str}\n"
+                f"{vol_stat_line}"
+                f"{body_stat_line}"
                 f"\"{clean_reason}\"\n\n"
                 f"<b>Entry / Level:</b> ₹{signal.entry_price:,.2f}\n"
                 f"⚡ <b>Actionable Order Range:</b> ₹{stk_low:,.2f} – ₹{stk_high:,.2f}\n"

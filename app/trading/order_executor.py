@@ -249,6 +249,18 @@ class DhanOrderExecutor:
                 return True, f"Intraday Order Placed! Order ID: #{order_id}"
             else:
                 remarks = res2.get("remarks", str(res2))
+                err_str = str(remarks)
+                if "DH-905" in err_str or "Invalid IP" in err_str:
+                    return False, (
+                        "⚠️ <b>Dhan API Error: Server IP Not Whitelisted (DH-905)</b>\n\n"
+                        "Dhan blocks API orders unless your server IP is whitelisted in your Dhan account.\n"
+                        "👉 <b>Server Static IP:</b> <code>34.10.99.222</code>\n\n"
+                        "<b>How to fix in 1 minute:</b>\n"
+                        "1. Open <a href='https://web.dhan.co'>web.dhan.co</a>\n"
+                        "2. Go to <b>My Profile ➔ DhanHQ Trading & Data APIs ➔ IP Setup / Static IP</b>\n"
+                        "3. Enter: <code>34.10.99.222</code> and Save.\n\n"
+                        "💡 <i>Once saved, all future 1-click orders will execute directly on Dhan!</i>"
+                    )
                 return False, f"Dhan API Error: {remarks}"
 
         except Exception as e:

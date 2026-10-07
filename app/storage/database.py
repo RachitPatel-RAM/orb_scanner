@@ -322,6 +322,14 @@ class Database:
                     is_closed=excluded.is_closed;
             """, (security_id, symbol, timestamp, open_, high, low, close, volume, 1 if is_closed else 0))
 
+    def get_recent_candles_15m(self, security_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM candles_15m WHERE security_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (security_id, limit)
+            ).fetchall()
+            return [dict(r) for r in reversed(rows)]
+
     def save_orb_levels(self, trade_date: str, security_id: str, symbol: str,
                         orb_high: float, orb_low: float, orb_mid: float, is_complete: bool = True) -> None:
         with self.get_connection() as conn:

@@ -166,21 +166,30 @@ class MLLearner:
             anatomy_delta -= 25.0
             reasons.append("SMC Liquidity Grab Wick Detected [-25]")
 
-        # 2. Volume Expansion
+        # 2. Mandatory Volume Expansion (Institutional Participation)
+        vol_ratio = 1.0
         if avg_volume_20 and avg_volume_20 > 0:
             vol_ratio = candle.volume / avg_volume_20
             if vol_ratio >= 2.0:
                 score += 25.0
                 vol_delta += 25.0
-                reasons.append(f"Huge Volume Surge ({vol_ratio:.1f}x avg) [+25]")
-            elif vol_ratio >= 1.3:
+                reasons.append(f"Institutional Volume Surge ({vol_ratio:.1f}x avg) [+25]")
+            elif vol_ratio >= 1.5:
                 score += 15.0
                 vol_delta += 15.0
                 reasons.append(f"Above Average Volume ({vol_ratio:.1f}x) [+15]")
-            elif vol_ratio < 0.7:
-                score -= 15.0
-                vol_delta -= 15.0
-                reasons.append(f"Low Volume Breakout ({vol_ratio:.1f}x avg) [-15]")
+            elif vol_ratio >= 1.2:
+                score += 0.0
+                reasons.append(f"Average Volume ({vol_ratio:.1f}x) [+0]")
+            else:
+                score -= 35.0
+                vol_delta -= 35.0
+                reasons.append(f"Sub-par / Modest Volume ({vol_ratio:.1f}x avg) [-35]")
+        else:
+            # If historical volume not verified, heavily penalize to prevent false breakouts
+            score -= 25.0
+            vol_delta -= 25.0
+            reasons.append("Unconfirmed Volume Depth [-25]")
 
         # 3. ORB Range Width
         if orb_low > 0:
@@ -255,8 +264,8 @@ class MLLearner:
         except Exception as e:
             logger.debug(f"Error querying stock learned model for {candle.symbol}: {e}")
 
-        # Bound score between 5 and 99
-        final_score = int(max(5, min(99, score)))
+        # Bound score between 10 and 85 (Realistic empirical range, no fake 99% scores)
+        final_score = int(max(10, min(85, score)))
 
         if final_score >= 70:
             level = "HIGH_CONVICTION"

@@ -101,6 +101,15 @@ class LiveEngine:
 
         # 2. Check for breakout signals if 15m signal timeframe is active
         if settings.strategy.signal_timeframe == 15:
+            # Query recent 15m candles to calculate 20-period average volume for verified institutional expansion
+            try:
+                recent_vols = db.get_recent_candles_15m(candle.security_id, limit=20)
+                if recent_vols and len(recent_vols) >= 3:
+                    avg_v = sum(r["volume"] for r in recent_vols) / len(recent_vols)
+                    setattr(candle, "avg_volume_20", avg_v)
+            except Exception as e:
+                logger.debug(f"Volume calculation note for {candle.symbol}: {e}")
+
             signal = self.strategy.on_candle_closed(candle)
             if signal:
                 self._handle_signal(signal, candle)
