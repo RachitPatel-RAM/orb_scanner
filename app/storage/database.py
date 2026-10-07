@@ -258,6 +258,23 @@ class Database:
             );
             """)
 
+            # Pending Orders Table (Persistent 1-click execution across server restarts)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pending_orders (
+                sig_key TEXT PRIMARY KEY,
+                security_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                stop_loss REAL NOT NULL,
+                target REAL NOT NULL,
+                lot_size INTEGER NOT NULL,
+                margin_req REAL NOT NULL,
+                total_lot_price REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+
             # Indexes for ultra-fast lookup
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles1m_sec_ts ON candles_1m(security_id, timestamp);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles5m_sec_ts ON candles_5m(security_id, timestamp);")
@@ -588,6 +605,64 @@ class Database:
     def get_vip_subscriber(self, telegram_id: str) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
             row = conn.execute("SELECT * FROM vip_subscribers WHERE telegram_id = ?", (telegram_id,)).fetchone()
+            return dict(row) if row else None
+
+    def save_pending_order(
+        self,
+        sig_key: str,
+        security_id: str,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        target: float,
+        lot_size: int,
+        margin_req: float,
+        total_lot_price: float,
+    ) -> None:
+        """Persists pending 1-click execution order so buttons remain active across server reboots."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO pending_orders (
+                    sig_key, security_id, symbol, direction, entry_price,
+                    stop_loss, target, lot_size, margin_req, total_lot_price
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(sig_key) DO UPDATE SET
+                    security_id = excluded.security_id,
+                    symbol = excluded.symbol,
+                    direction = excluded.direction,
+                    entry_price = excluded.entry_price,
+                    stop_loss = excluded.stop_loss,
+                    target = excluded.target,
+                    lot_size = excluded.lot_size,
+                    margin_req = excluded.margin_req,
+                    total_lot_price = excluded.total_lot_price,
+                    created_at = CURRENT_TIMESTAMP;
+            """, (sig_key, str(security_id), symbol, str(direction), float(entry_price),
+                  float(stop_loss), float(target), int(lot_size), float(margin_req), float(total_lot_price)))
+
+    def get_pending_order(self, sig_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieves persistent pending order by sig_key."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM pending_orders WHERE sig_key = ?", (sig_key,)).fetchone()
+            return dict(row) if row else None
+
+    def get_latest_signal_for_sec(self, security_id: str) -> Optional[Dict[str, Any]]:
+        """Fallback to retrieve latest signal for security_id if order is not in pending_orders."""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM signals WHERE security_id = ? ORDER BY id DESC LIMIT 1",
+                (str(security_id),)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_latest_signal_by_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Fallback to retrieve latest signal by stock symbol."""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT 1",
+                (symbol.upper(),)
+            ).fetchone()
             return dict(row) if row else None
 
 

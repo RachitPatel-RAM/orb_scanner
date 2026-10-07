@@ -79,6 +79,18 @@ class DhanOrderExecutor:
                 "opt_contract": opt_contract,
                 "created_at": datetime.now(),
             }
+            db.save_pending_order(
+                sig_key=sig_key,
+                security_id=opt_contract.security_id,
+                symbol=opt_contract.underlying,
+                direction=str(signal.direction.value if hasattr(signal.direction, "value") else signal.direction),
+                entry_price=opt_contract.ltp,
+                stop_loss=opt_contract.stop_loss_premium,
+                target=opt_contract.target_premium,
+                lot_size=qty,
+                margin_req=margin_req,
+                total_lot_price=total_value,
+            )
 
             reply_markup = {
                 "inline_keyboard": [
@@ -115,6 +127,18 @@ class DhanOrderExecutor:
                 "total_lot_price": 4500.0,
                 "created_at": datetime.now(),
             }
+            db.save_pending_order(
+                sig_key=sig_key,
+                security_id=signal.security_id,
+                symbol=signal.symbol,
+                direction=str(signal.direction.value if hasattr(signal.direction, "value") else signal.direction),
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                target=signal.target,
+                lot_size=idx_lot,
+                margin_req=4500.0,
+                total_lot_price=4500.0,
+            )
             reply_markup = {
                 "inline_keyboard": [
                     [
@@ -144,6 +168,18 @@ class DhanOrderExecutor:
             "total_lot_price": total_value,
             "created_at": datetime.now(),
         }
+        db.save_pending_order(
+            sig_key=sig_key,
+            security_id=signal.security_id,
+            symbol=signal.symbol,
+            direction=str(signal.direction.value if hasattr(signal.direction, "value") else signal.direction),
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            target=signal.target,
+            lot_size=qty,
+            margin_req=margin_req,
+            total_lot_price=total_value,
+        )
 
         # Format button with exact margin price fitting the user's capital
         if signal.direction == Direction.LONG:
@@ -172,10 +208,10 @@ class DhanOrderExecutor:
         Places order on Dhan with Stop Loss and Target.
         Uses place_super_order (Bracket Order) with fallback to place_order with trigger.
         """
-        signal: Signal = order_data["signal"]
         sec_id = str(order_data["security_id"])
-        symbol = order_data["symbol"]
-        is_long = order_data["direction"] == Direction.LONG
+        symbol = str(order_data["symbol"])
+        dir_val = order_data.get("direction")
+        is_long = dir_val == Direction.LONG or str(dir_val).upper() in ("LONG", "BUY")
         txn_type = "BUY" if is_long else "SELL"
         qty = int(order_data["lot_size"]) * max(1, lot_multiplier)
         price = float(order_data["entry_price"])
@@ -1107,33 +1143,99 @@ class DhanOrderExecutor:
         query_id = cb_query.get("id")
         cb_id = str(query_id)
         if cb_id in self._processed_callbacks:
+            await self._answer_callback(query_id, "Order already processed.")
             return
         self._processed_callbacks.add(cb_id)
 
         from_user = cb_query.get("from", {})
-        user_id = str(from_user.get("id", ""))
-        
-        # Verify authorized chat
-        if user_id != str(settings.telegram_chat_id).strip():
-            logger.warning(f"Unauthorized callback attempt from Telegram user ID: {user_id}")
-            await self._answer_callback(query_id, "Unauthorized.")
+        user_id = str(from_user.get("id", "")).strip()
+        message = cb_query.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id", "")).strip() or str(settings.telegram_chat_id).strip()
+        auth_chat_id = str(settings.telegram_chat_id).strip()
+        auth_vip_id = str(getattr(settings, "telegram_vip_channel_id", "") or "").strip()
+
+        # Flexible auth: user ID matches, chat ID matches, or VIP channel matches
+        is_authorized = (
+            user_id == auth_chat_id
+            or chat_id == auth_chat_id
+            or (auth_vip_id and (chat_id == auth_vip_id or user_id == auth_vip_id))
+            or not auth_chat_id
+        )
+        if not is_authorized:
+            logger.warning(f"Unauthorized callback attempt from Telegram user ID: {user_id}, chat: {chat_id}")
+            await self._answer_callback(query_id, "Unauthorized click.", show_alert=True)
             return
 
         data = cb_query.get("data", "")
-        message = cb_query.get("message", {})
         message_id = message.get("message_id")
         orig_text = message.get("text", "")
+
+        # IMMEDIATELY answer callback to stop loading spinner on user's phone!
+        await self._answer_callback(query_id, "Processing your order...")
 
         if data.startswith("app:"):
             parts = data.split(":")
             sig_key = parts[1]
             lot_mult = int(parts[2]) if len(parts) > 2 else 1
+
+            # 1. In-memory lookup
             order_data = self._pending_orders.get(sig_key)
+
+            # 2. Database persistent lookup
             if not order_data:
-                await self._answer_callback(query_id, "Signal expired or not found.")
+                db_row = db.get_pending_order(sig_key)
+                if db_row:
+                    dir_val = Direction.LONG if str(db_row["direction"]).upper() in ("LONG", "BUY") else Direction.SHORT
+                    order_data = {
+                        "signal": None,
+                        "security_id": db_row["security_id"],
+                        "symbol": db_row["symbol"],
+                        "direction": dir_val,
+                        "entry_price": float(db_row["entry_price"]),
+                        "stop_loss": float(db_row["stop_loss"]),
+                        "target": float(db_row["target"]),
+                        "lot_size": int(db_row["lot_size"]),
+                        "margin_req": float(db_row["margin_req"]),
+                        "total_lot_price": float(db_row["total_lot_price"]),
+                    }
+
+            # 3. Fallback: Parse sig_key to extract security_id and query latest recorded signal
+            if not order_data:
+                sec_id = sig_key.split("_")[0] if "_" in sig_key else sig_key
+                sig_row = db.get_latest_signal_for_sec(sec_id)
+                if not sig_row and orig_text:
+                    for w in orig_text.split():
+                        clean_w = w.strip(":\n ,.*#_[]()")
+                        sig_row = db.get_latest_signal_by_symbol(clean_w)
+                        if sig_row:
+                            break
+                if sig_row:
+                    default_cap = float(os.getenv("TRADING_CAPITAL", "4322.0"))
+                    capital = db.get_account_balance(default_cap)
+                    usable_capital = capital * 0.85
+                    max_exposure = usable_capital * 5.0
+                    entry_p = float(sig_row["entry_price"])
+                    qty = max(1, int(max_exposure / entry_p))
+                    dir_val = Direction.LONG if str(sig_row["direction"]).upper() in ("LONG", "BUY") else Direction.SHORT
+                    order_data = {
+                        "signal": None,
+                        "security_id": sig_row["security_id"],
+                        "symbol": sig_row["symbol"],
+                        "direction": dir_val,
+                        "entry_price": entry_p,
+                        "stop_loss": float(sig_row["stop_loss"]),
+                        "target": float(sig_row["target"]),
+                        "lot_size": qty,
+                        "margin_req": round((entry_p * qty) / 5.0, 2),
+                        "total_lot_price": round(entry_p * qty, 2),
+                    }
+
+            if not order_data:
+                logger.warning(f"Pending order not found for sig_key: {sig_key}")
+                await self._answer_callback(query_id, "Signal not found or expired.", show_alert=True)
                 return
 
-            await self._answer_callback(query_id, f"Submitting order for {lot_mult} Lot(s) to Dhan...")
             success, msg = await self.execute_dhan_order(order_data, lot_multiplier=lot_mult)
             total_qty = order_data["lot_size"] * lot_mult
 
@@ -1147,26 +1249,30 @@ class DhanOrderExecutor:
                 f"<b>Stop Loss:</b> ₹{order_data['stop_loss']:,.2f}\n"
                 f"<b>Execution Time:</b> {datetime.now().strftime('%H:%M:%S')} IST"
             )
-            await self._edit_message(message_id, new_text)
+            await self._edit_message(chat_id, message_id, new_text)
 
         elif data.startswith("rej:"):
             sig_key = data.split(":", 1)[1]
             await self._answer_callback(query_id, "Signal rejected.")
             new_text = f"{orig_text}\n\n❌ <i>Signal Rejected / Dismissed by User.</i>"
-            await self._edit_message(message_id, new_text)
+            await self._edit_message(chat_id, message_id, new_text)
 
-    async def _answer_callback(self, callback_query_id: str, text: str):
+    async def _answer_callback(self, callback_query_id: str, text: str, show_alert: bool = False):
         url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/answerCallbackQuery"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(url, json={"callback_query_id": callback_query_id, "text": text})
+                await client.post(url, json={
+                    "callback_query_id": str(callback_query_id),
+                    "text": str(text)[:200],
+                    "show_alert": bool(show_alert),
+                })
         except Exception as e:
             logger.debug(f"Error answering callback query: {e}")
 
-    async def _edit_message(self, message_id: int, new_text: str):
+    async def _edit_message(self, chat_id: Any, message_id: int, new_text: str):
         url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/editMessageText"
         payload = {
-            "chat_id": settings.telegram_chat_id,
+            "chat_id": chat_id or settings.telegram_chat_id,
             "message_id": message_id,
             "text": new_text,
             "parse_mode": "HTML",
