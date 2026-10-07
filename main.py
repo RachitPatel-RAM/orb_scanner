@@ -409,26 +409,36 @@ class LiveEngine:
                     "breakouts": breakout_items,
                 }
 
-                logger.info(f"Generating Market Close Summary & 5-Year Deep Learning: {summary_data}")
+                logger.info(f"Generating Market Close Summary for {today_str}: {summary_data}")
 
-                # 5-Year Empirical Deep Learning & Multi-Year Statistical Calibration
+                # 1. Immediately dismiss all active Telegram inline buttons from today's alerts
                 try:
-                    from app.strategies.historical_learner import historical_learner
-                    from app.storage.firebase_sync import firebase_sync
+                    cleared_btns = await notifier.dismiss_all_active_buttons_for_date(today_str)
+                    logger.info(f"Market close button cleanup: dismissed active buttons on {cleared_btns} messages.")
+                except Exception as btn_err:
+                    logger.debug(f"Button cleanup error: {btn_err}")
 
-                    # Run multi-year learning cycle across universe on genuine Dhan historical bars
-                    historical_res = await historical_learner.run_historical_learning_cycle()
-
-                    # Format clean EOD message without brand names, insights in quotes
-                    eod_msg = historical_learner.format_eod_report_message(
-                        daily_trades_summary=summary_data,
-                        learning_res=historical_res,
-                    )
-                    await notifier.send_message(eod_msg, idempotency_key=f"{today_str}_EOD_SUMMARY")
-                    await firebase_sync.save_daily_report(today_str, summary_data)
-                except Exception as ml_err:
-                    logger.error(f"Error during EOD historical learning: {ml_err}")
+                # 2. Dispatch verified daily summary to Telegram immediately
+                try:
                     await notifier.send_daily_summary(summary_data)
+                    logger.info("Market close daily summary dispatched to Telegram.")
+                except Exception as sum_err:
+                    logger.error(f"Error dispatching EOD daily summary: {sum_err}")
+
+                # 3. Background empirical multi-year deep learning cycle (non-blocking)
+                async def _bg_historical_learning():
+                    try:
+                        from app.strategies.historical_learner import historical_learner
+                        from app.storage.firebase_sync import firebase_sync
+
+                        logger.info("Starting background EOD 5-Year Deep Learning calibration...")
+                        historical_res = await historical_learner.run_historical_learning_cycle()
+                        await firebase_sync.save_daily_report(today_str, summary_data)
+                        logger.info("Background EOD 5-Year Deep Learning calibration complete.")
+                    except Exception as ml_err:
+                        logger.error(f"Error during background EOD learning: {ml_err}")
+
+                asyncio.create_task(_bg_historical_learning())
 
                 self._daily_summary_sent = True
                 self._last_summary_date = today_str

@@ -85,6 +85,52 @@ class TelegramNotifier:
             return True
 
         dest_chat_id = str(target_chat_id or self.chat_id)
+
+        # Automatically split messages exceeding Telegram's 4096 character limit
+        if len(text) > 3900:
+            chunks = []
+            current_chunk = []
+            curr_len = 0
+            for line in text.split("\n"):
+                if curr_len + len(line) + 1 > 3800:
+                    chunks.append("\n".join(current_chunk))
+                    current_chunk = [line]
+                    curr_len = len(line)
+                else:
+                    current_chunk.append(line)
+                    curr_len += len(line) + 1
+            if current_chunk:
+                chunks.append("\n".join(current_chunk))
+
+            all_ok = True
+            for i, chunk in enumerate(chunks):
+                sub_key = f"{idempotency_key}_{i}" if idempotency_key else None
+                ok = await self._send_single_payload(
+                    text=chunk,
+                    dest_chat_id=dest_chat_id,
+                    reply_markup=reply_markup if i == len(chunks) - 1 else None,
+                    idempotency_key=sub_key,
+                )
+                if not ok:
+                    all_ok = False
+                await asyncio.sleep(0.5)
+            return all_ok
+
+        return await self._send_single_payload(
+            text=text,
+            dest_chat_id=dest_chat_id,
+            reply_markup=reply_markup,
+            idempotency_key=idempotency_key,
+        )
+
+    async def _send_single_payload(
+        self,
+        text: str,
+        dest_chat_id: str,
+        reply_markup: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> bool:
+        """Sends a single Telegram message payload with retries and logging."""
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload: Dict[str, Any] = {
             "chat_id": dest_chat_id,
@@ -112,7 +158,6 @@ class TelegramNotifier:
                                 sent_msg_id = int(raw_mid)
                         break
                     elif resp.status_code == 429:
-                        # Rate limit backoff
                         retry_after = int(resp.headers.get("Retry-After", 2))
                         logger.warning(f"Telegram 429 Rate Limit. Sleeping {retry_after}s...")
                         await asyncio.sleep(retry_after)
@@ -120,7 +165,6 @@ class TelegramNotifier:
                         last_err = f"HTTP {resp.status_code}: {resp.text}"
                         logger.error(f"Telegram API error (attempt {attempt}): {last_err}")
             except Exception as e:
-                # Mask token in case URL was logged in exception
                 err_str = str(e).replace(self.bot_token, "BOT_TOKEN_REDACTED")
                 last_err = err_str
                 logger.error(f"Telegram connection exception (attempt {attempt}): {err_str}")
@@ -136,10 +180,49 @@ class TelegramNotifier:
             success=success,
             error_message=last_err if not success else None,
             message_id=sent_msg_id,
-            chat_id=self.chat_id,
+            chat_id=dest_chat_id,
         )
 
         return success
+
+    async def dismiss_all_active_buttons_for_date(self, trade_date: str) -> int:
+        """
+        Removes all interactive inline buttons (Buy/Sell/Reject) from today's Telegram alert messages
+        once market closes (15:30 IST), preventing accidental clicks after market hours.
+        """
+        if not self.is_configured:
+            return 0
+
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, message_id, chat_id FROM alerts WHERE DATE(sent_at) = ? AND message_id IS NOT NULL AND is_deleted = 0",
+                (trade_date,)
+            ).fetchall()
+
+        if not rows:
+            return 0
+
+        logger.info(f"Dismissing active Telegram buttons across {len(rows)} messages for {trade_date}...")
+        url = f"https://api.telegram.org/bot{self.bot_token}/editMessageReplyMarkup"
+        cleared_count = 0
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for r in rows:
+                mid = r["message_id"]
+                cid = r["chat_id"] or self.chat_id
+                try:
+                    resp = await client.post(url, json={
+                        "chat_id": cid,
+                        "message_id": mid,
+                        "reply_markup": {"inline_keyboard": []}  # empty list removes keyboard
+                    })
+                    if resp.status_code == 200:
+                        cleared_count += 1
+                except Exception as e:
+                    logger.debug(f"Failed to clear buttons for msg {mid}: {e}")
+
+        logger.info(f"Successfully cleared buttons from {cleared_count} messages.")
+        return cleared_count
 
     async def cleanup_old_messages(self, older_than_hours: int = 24) -> int:
         """
