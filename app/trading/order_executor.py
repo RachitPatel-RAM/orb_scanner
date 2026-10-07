@@ -465,7 +465,8 @@ class DhanOrderExecutor:
             if getattr(self, f"_idx_broken_{sym}_{d.isoformat()}", False):
                 continue
 
-            payload = {
+            # 1. Fetch 15-minute candles to establish Benchmark Range (09:30-10:00 IST)
+            payload_15m = {
                 "securityId": sid,
                 "exchangeSegment": seg,
                 "instrument": "INDEX",
@@ -473,51 +474,98 @@ class DhanOrderExecutor:
                 "toDate": f"{d.isoformat()} 15:30:00",
                 "interval": "15",
             }
+            # 2. Fetch 5-minute candles for agile breakout execution
+            payload_5m = {
+                "securityId": sid,
+                "exchangeSegment": seg,
+                "instrument": "INDEX",
+                "fromDate": f"{d.isoformat()} 09:15:00",
+                "toDate": f"{d.isoformat()} 15:30:00",
+                "interval": "5",
+            }
+
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    highs = data.get("high", [])
-                    lows = data.get("low", [])
-                    closes = data.get("close", [])
-                    opens = data.get("open", [])
-                    timestamps = data.get("timestamp", [])
-                    volumes = data.get("volume", [1000] * len(closes))
+                    resp_15m, resp_5m = await asyncio.gather(
+                        client.post(url, headers=headers, json=payload_15m),
+                        client.post(url, headers=headers, json=payload_5m),
+                        return_exceptions=True
+                    )
 
-                    if len(highs) >= 3:
+                if (
+                    isinstance(resp_15m, httpx.Response) and resp_15m.status_code == 200
+                    and isinstance(resp_5m, httpx.Response) and resp_5m.status_code == 200
+                ):
+                    data_15m = resp_15m.json()
+                    highs_15m = data_15m.get("high", [])
+                    lows_15m = data_15m.get("low", [])
+
+                    if len(highs_15m) >= 3:
                         # Full 09:30-10:00 Benchmark Range (Candles 1 & 2)
-                        orb_high = max(highs[1], highs[2])
-                        orb_low = min(lows[1], lows[2])
+                        orb_high = max(highs_15m[1], highs_15m[2])
+                        orb_low = min(lows_15m[1], lows_15m[2])
                         orb_mid = round((orb_high + orb_low) / 2.0, 2)
 
-                        # Find the LAST STRICTLY CLOSED 15m candle (must have elapsed full 900 seconds)
+                        # Inspect strictly closed 5-minute candles
+                        data_5m = resp_5m.json()
+                        highs_5m = data_5m.get("high", [])
+                        lows_5m = data_5m.get("low", [])
+                        closes_5m = data_5m.get("close", [])
+                        opens_5m = data_5m.get("open", [])
+                        ts_5m = data_5m.get("timestamp", [])
+                        vols_5m = data_5m.get("volume", [1000] * len(closes_5m))
+
+                        # Look for the latest closed 5m candle that elapsed full 300 seconds (post-10:00 AM)
+                        # 10:00 AM IST epoch today:
+                        dt_10am = default_session.now().replace(hour=10, minute=0, second=0, microsecond=0)
+                        epoch_10am = dt_10am.timestamp()
+
                         closed_idx = None
-                        for i in range(len(timestamps) - 1, -1, -1):
-                            candle_start_ts = timestamps[i]
-                            # A 15-minute candle starting at T is only fully closed at T + 900s
-                            if now_epoch >= (candle_start_ts + 900):
+                        for i in range(len(ts_5m) - 1, -1, -1):
+                            candle_start_ts = ts_5m[i]
+                            if candle_start_ts >= epoch_10am and now_epoch >= (candle_start_ts + 300):
                                 closed_idx = i
                                 break
 
-                        # Must be past the ORB period (i.e. closed_idx >= 3, after 10:00 AM)
-                        if closed_idx is None or closed_idx < 3:
+                        if closed_idx is None:
                             continue
 
-                        closed_close = closes[closed_idx]
-                        closed_high = highs[closed_idx]
-                        closed_low = lows[closed_idx]
-                        closed_open = opens[closed_idx]
+                        c_close = closes_5m[closed_idx]
+                        c_open = opens_5m[closed_idx]
+                        c_high = highs_5m[closed_idx]
+                        c_low = lows_5m[closed_idx]
+                        c_vol = float(vols_5m[closed_idx]) if vols_5m else 1000.0
+
+                        candle_rng = max(0.01, c_high - c_low)
+                        upper_wick = c_high - max(c_open, c_close)
+                        lower_wick = min(c_open, c_close) - c_low
 
                         direction = None
-                        if closed_close > orb_high:
+                        if c_close > orb_high:
+                            # Resistance Rejection / False Breakout Trap Filter
+                            if (upper_wick / candle_rng) > 0.40:
+                                logger.warning(
+                                    f"[Index Trap Filter] Blocked {sym} LONG at ₹{c_close:,.2f}: "
+                                    f"40%+ Upper Wick Rejection at ORB High Resistance ₹{orb_high:,.2f}."
+                                )
+                                continue
                             direction = Direction.LONG
-                            sl = orb_mid
-                            target = round(closed_close + (closed_close - sl) * 2.0, 2)
-                        elif closed_close < orb_low:
+                            sl = round(max(orb_mid, c_low), 2)
+                            risk = max(5.0, c_close - sl)
+                            target = round(c_close + risk * 2.2, 2)
+
+                        elif c_close < orb_low:
+                            # Support Rejection / False Breakdown Trap Filter
+                            if (lower_wick / candle_rng) > 0.40:
+                                logger.warning(
+                                    f"[Index Trap Filter] Blocked {sym} SHORT at ₹{c_close:,.2f}: "
+                                    f"40%+ Lower Wick Rejection at ORB Low Support ₹{orb_low:,.2f}."
+                                )
+                                continue
                             direction = Direction.SHORT
-                            sl = orb_mid
-                            target = round(closed_close - (sl - closed_close) * 2.0, 2)
+                            sl = round(min(orb_mid, c_high), 2)
+                            risk = max(5.0, sl - c_close)
+                            target = round(c_close - risk * 2.2, 2)
 
                         if direction:
                             setattr(self, f"_idx_broken_{sym}_{d.isoformat()}", True)
@@ -525,11 +573,11 @@ class DhanOrderExecutor:
                                 security_id=sid,
                                 symbol=sym,
                                 timestamp=now_dt,
-                                open=closed_open,
-                                high=closed_high,
-                                low=closed_low,
-                                close=closed_close,
-                                volume=float(volumes[closed_idx]) if volumes else 1000.0,
+                                open=c_open,
+                                high=c_high,
+                                low=c_low,
+                                close=c_close,
+                                volume=c_vol,
                                 is_closed=True,
                             )
                             sig = Signal(
@@ -537,20 +585,20 @@ class DhanOrderExecutor:
                                 security_id=sid,
                                 symbol=sym,
                                 timestamp=now_dt,
-                                strategy="ORB-15",
+                                strategy="ORB-5m (15m Benchmark)",
                                 direction=direction,
-                                entry_price=closed_close,
+                                entry_price=c_close,
                                 orb_high=orb_high,
                                 orb_low=orb_low,
                                 stop_loss=sl,
                                 target=target,
-                                risk_reward=2.0,
-                                idempotency_key=f"{idemp_prefix}_{direction.value}",
+                                risk_reward=2.2,
+                                idempotency_key=f"{idemp_prefix}_{direction.value}_5M",
                             )
                             if on_signal_callback:
                                 on_signal_callback(sig, candle=c)
             except Exception as e:
-                logger.debug(f"Error checking {sym} breakout: {e}")
+                logger.debug(f"Error checking {sym} 5m breakout: {e}")
 
     async def check_commodity_smc_setups(self) -> None:
         """Commodity scanner disabled by user preference (focused 100% on NSE Equity & Indices)."""

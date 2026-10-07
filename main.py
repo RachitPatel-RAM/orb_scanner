@@ -145,87 +145,85 @@ class LiveEngine:
                 logger.error(f"Error evaluating ML conviction for signal {sig.symbol}: {e}")
 
         # 2. Institutional Multi-Confluence Engine (Traditional Pivots + Dhan OI Profile)
-        # Prevents selling right into S1 Support (e.g. Voltas trap) or buying right into R1 Resistance!
+        # Prevents selling right into S1 Support or buying right into R1 Resistance!
         confluence = None
-        if not is_index:
-            try:
-                from app.strategies.confluence_engine import confluence_engine
-                confluence = await confluence_engine.evaluate_confluence(
-                    security_id=sig.security_id,
-                    symbol=sig.symbol,
-                    direction=sig.direction,
-                    entry_price=sig.entry_price,
-                    stop_loss=sig.stop_loss,
-                    target=sig.target,
-                    candle=candle,
+        try:
+            from app.strategies.confluence_engine import confluence_engine
+            confluence = await confluence_engine.evaluate_confluence(
+                security_id=sig.security_id,
+                symbol=sig.symbol,
+                direction=sig.direction,
+                entry_price=sig.entry_price,
+                stop_loss=sig.stop_loss,
+                target=sig.target,
+                candle=candle,
+            )
+            if not confluence.is_valid:
+                logger.warning(
+                    f"[Confluence Filter] Blocked {sig.symbol} {sig.direction.value} breakout: "
+                    f"{confluence.rejection_reason}"
                 )
-                if not confluence.is_valid:
-                    logger.warning(
-                        f"[Confluence Filter] Blocked {sig.symbol} {sig.direction.value} breakout: "
-                        f"{confluence.rejection_reason}"
-                    )
-                    return
+                return
 
-                # Adopt dynamic structural Target and Stop Loss from SMC / Pivots / OI (Not rigid 1:2)
-                if confluence.structural_target and confluence.structural_stop_loss:
-                    sig.target = confluence.structural_target
-                    sig.stop_loss = confluence.structural_stop_loss
-                    if confluence.structural_rr:
-                        sig.risk_reward = confluence.structural_rr
-                    logger.info(
-                        f"[Structural Levels] {sig.symbol} {sig.direction.value}: "
-                        f"Target=₹{sig.target:.2f} ({confluence.target_milestone}), "
-                        f"SL=₹{sig.stop_loss:.2f} ({confluence.sl_milestone}), R:R=1:{sig.risk_reward:g}"
-                    )
+            # Adopt dynamic structural Target and Stop Loss from SMC / Pivots / OI (Not rigid 1:2)
+            if confluence.structural_target and confluence.structural_stop_loss:
+                sig.target = confluence.structural_target
+                sig.stop_loss = confluence.structural_stop_loss
+                if confluence.structural_rr:
+                    sig.risk_reward = confluence.structural_rr
+                logger.info(
+                    f"[Structural Levels] {sig.symbol} {sig.direction.value}: "
+                    f"Target=₹{sig.target:.2f} ({confluence.target_milestone}), "
+                    f"SL=₹{sig.stop_loss:.2f} ({confluence.sl_milestone}), R:R=1:{sig.risk_reward:g}"
+                )
 
-                logger.info(f"[Confluence Confirmed] {sig.symbol} {sig.direction.value}: {confluence.summary_text}")
-            except Exception as e:
-                logger.debug(f"Confluence evaluation note for {sig.symbol}: {e}")
+            logger.info(f"[Confluence Confirmed] {sig.symbol} {sig.direction.value}: {confluence.summary_text}")
+        except Exception as e:
+            logger.debug(f"Confluence evaluation note for {sig.symbol}: {e}")
 
         # 2.5 AI Dual Ensemble Veto Gate (Gemini 3.5 Flash Lite + Groq LPU)
         # If AI flags CAUTION, TRAP, lack of volume, or false move risk,
         # the signal is IMMEDIATELY VETOED before any trade is opened or alert sent!
         ai_reason_text: Optional[str] = None
-        if not is_index:
-            try:
-                from app.strategies.groq_analyzer import groq_analyzer
-                from app.strategies.gemini_analyzer import gemini_analyzer
+        try:
+            from app.strategies.groq_analyzer import groq_analyzer
+            from app.strategies.gemini_analyzer import gemini_analyzer
 
-                vol_ratio = 1.0
-                if candle and getattr(candle, "avg_volume_20", None) and candle.avg_volume_20 > 0:
-                    vol_ratio = candle.volume / candle.avg_volume_20
+            vol_ratio = 1.0
+            if candle and getattr(candle, "avg_volume_20", None) and candle.avg_volume_20 > 0:
+                vol_ratio = candle.volume / candle.avg_volume_20
 
-                groq_task = groq_analyzer.analyze_breakout_fast(sig, candle, volume_surge=vol_ratio)
-                gemini_task = gemini_analyzer.analyze_breakout(sig, candle, volume_surge=vol_ratio)
-                groq_res, gemini_res = await asyncio.gather(groq_task, gemini_task, return_exceptions=True)
+            groq_task = groq_analyzer.analyze_breakout_fast(sig, candle, volume_surge=vol_ratio)
+            gemini_task = gemini_analyzer.analyze_breakout(sig, candle, volume_surge=vol_ratio)
+            groq_res, gemini_res = await asyncio.gather(groq_task, gemini_task, return_exceptions=True)
 
-                groq_verdict = groq_res.get("verdict", "") if isinstance(groq_res, dict) else ""
-                gemini_verdict = gemini_res.get("verdict", "") if isinstance(gemini_res, dict) else ""
+            groq_verdict = groq_res.get("verdict", "") if isinstance(groq_res, dict) else ""
+            gemini_verdict = gemini_res.get("verdict", "") if isinstance(gemini_res, dict) else ""
 
-                groq_reason = groq_res.get("reasoning", "") if isinstance(groq_res, dict) else ""
-                gemini_reason = gemini_res.get("reasoning", "") if isinstance(gemini_res, dict) else ""
-                active_reason = gemini_reason or groq_reason
+            groq_reason = groq_res.get("reasoning", "") if isinstance(groq_res, dict) else ""
+            gemini_reason = gemini_res.get("reasoning", "") if isinstance(gemini_res, dict) else ""
+            active_reason = gemini_reason or groq_reason
 
-                # Check if AI flags caution, trap, lack of volume, or false move risk
-                is_caution = (
-                    "CAUTION" in groq_verdict
-                    or "CAUTION" in gemini_verdict
-                    or "false move" in active_reason.lower()
-                    or "lacks" in active_reason.lower()
-                    or "trap" in active_reason.lower()
+            # Check if AI flags caution, trap, lack of volume, or false move risk
+            is_caution = (
+                "CAUTION" in groq_verdict
+                or "CAUTION" in gemini_verdict
+                or "false move" in active_reason.lower()
+                or "lacks" in active_reason.lower()
+                or "trap" in active_reason.lower()
+            )
+
+            if is_caution:
+                logger.warning(
+                    f"[AI Veto Filter] Blocked {sig.symbol} {sig.direction.value}: AI flagged CAUTION/TRAP. "
+                    f"Groq={groq_verdict}, Gemini={gemini_verdict}. Reason: {active_reason}"
                 )
+                return
 
-                if is_caution:
-                    logger.warning(
-                        f"[AI Veto Filter] Blocked {sig.symbol} {sig.direction.value}: AI flagged CAUTION/TRAP. "
-                        f"Groq={groq_verdict}, Gemini={gemini_verdict}. Reason: {active_reason}"
-                    )
-                    return
-
-                if active_reason:
-                    ai_reason_text = active_reason
-            except Exception as e:
-                logger.debug(f"AI ensemble verification note for {sig.symbol}: {e}")
+            if active_reason:
+                ai_reason_text = active_reason
+        except Exception as e:
+            logger.debug(f"AI ensemble verification note for {sig.symbol}: {e}")
 
         # 3. Save signal in SQLite (idempotency key prevents duplicate insertions)
         sig_id = db.save_signal(
