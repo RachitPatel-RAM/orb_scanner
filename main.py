@@ -115,10 +115,14 @@ class LiveEngine:
                 self._handle_signal(signal, candle)
 
     def _handle_signal(self, sig: Signal, candle: Optional[Candle] = None) -> None:
-        """Processes a new ORB breakout signal with ML conviction verification."""
+        """Schedules async multi-confluence verification and signal dispatch."""
+        asyncio.create_task(self._process_signal_async(sig, candle))
+
+    async def _process_signal_async(self, sig: Signal, candle: Optional[Candle] = None) -> None:
+        """Processes a new ORB breakout with ML conviction & Pivot/OI Confluence verification."""
         is_index = sig.symbol in ("NIFTY", "BANKNIFTY", "SENSEX", "NIFTY50") or str(sig.security_id) in ("13", "25", "51")
 
-        # AI learned conviction & false-breakout trap check:
+        # 1. AI learned conviction & false-breakout trap check:
         if candle and not is_index:
             try:
                 from app.strategies.ml_learner import ml_learner
@@ -140,7 +144,31 @@ class LiveEngine:
             except Exception as e:
                 logger.error(f"Error evaluating ML conviction for signal {sig.symbol}: {e}")
 
-        # Save signal in SQLite (idempotency key prevents duplicate insertions)
+        # 2. Institutional Multi-Confluence Engine (Traditional Pivots + Dhan OI Profile)
+        # Prevents selling right into S1 Support (e.g. Voltas trap) or buying right into R1 Resistance!
+        confluence = None
+        if not is_index:
+            try:
+                from app.strategies.confluence_engine import confluence_engine
+                confluence = await confluence_engine.evaluate_confluence(
+                    security_id=sig.security_id,
+                    symbol=sig.symbol,
+                    direction=sig.direction,
+                    entry_price=sig.entry_price,
+                    stop_loss=sig.stop_loss,
+                    target=sig.target,
+                )
+                if not confluence.is_valid:
+                    logger.warning(
+                        f"[Confluence Filter] Blocked {sig.symbol} {sig.direction.value} breakout: "
+                        f"{confluence.rejection_reason}"
+                    )
+                    return
+                logger.info(f"[Confluence Confirmed] {sig.symbol} {sig.direction.value}: {confluence.summary_text}")
+            except Exception as e:
+                logger.debug(f"Confluence evaluation note for {sig.symbol}: {e}")
+
+        # 3. Save signal in SQLite (idempotency key prevents duplicate insertions)
         sig_id = db.save_signal(
             trade_date=sig.trade_date.isoformat(),
             security_id=sig.security_id,
@@ -161,11 +189,19 @@ class LiveEngine:
             logger.info(f"Signal for {sig.symbol} already recorded. Skipping duplicate alert.")
             return
 
-        # Open virtual position in paper tracker
+        # 4. Open virtual position in paper tracker
         self.paper_tracker.open_trade_from_signal(sig, signal_id=sig_id)
 
-        # Dispatch Telegram alert (fail-safe async task with candle context)
-        asyncio.create_task(notifier.send_signal(sig, candle=candle))
+        # 5. Dispatch Telegram alert to trader with 1-click execution button
+        await notifier.send_signal(sig, candle=candle)
+
+        # 6. Broadcast clean signal to VIP Paid Channel (if configured)
+        if confluence:
+            try:
+                from app.notifications.vip_channel import vip_manager
+                await vip_manager.broadcast_vip_signal(sig, confluence)
+            except Exception as e:
+                logger.debug(f"VIP broadcast note: {e}")
 
     def _on_target_hit(self, trade: PaperTrade) -> None:
         """Callback when virtual position reaches its target."""
@@ -543,6 +579,15 @@ class LiveEngine:
                             logger.info("Dispatched 09:00 AM Morning Health Check alert.")
                         except Exception as e:
                             logger.debug(f"Error sending morning health alert: {e}")
+
+                        # Daily VIP Channel Expired Subscriber Audit
+                        try:
+                            from app.notifications.vip_channel import vip_manager
+                            evicted = await vip_manager.check_and_evict_expired_subscribers()
+                            if evicted > 0:
+                                logger.info(f"Daily VIP audit: evicted {evicted} expired subscribers.")
+                        except Exception as e:
+                            logger.debug(f"VIP expiry audit note: {e}")
 
                     # 2. 09:14 AM Pre-Market Final Briefing
                     if time(9, 14) <= now_t.time() < time(9, 15) and sent_briefing_day != c_date:

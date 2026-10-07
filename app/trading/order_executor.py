@@ -1034,6 +1034,42 @@ class DhanOrderExecutor:
             )
             await notifier.send_message(reply)
 
+        elif text.startswith("/add_sub"):
+            parts = text.split()
+            if len(parts) >= 4:
+                tg_id = parts[1]
+                sub_name = parts[2]
+                try:
+                    months = int(parts[3])
+                    from app.notifications.vip_channel import vip_manager
+                    ok, res_msg = await vip_manager.create_subscription_invite(tg_id, sub_name, months)
+                    await notifier.send_message(res_msg)
+                except ValueError:
+                    await notifier.send_message("⚠️ Invalid months. Format: <code>/add_sub &lt;user_id&gt; &lt;name&gt; &lt;months&gt;</code>")
+            else:
+                await notifier.send_message("ℹ️ Format: <code>/add_sub &lt;user_id&gt; &lt;name&gt; &lt;months&gt;</code>\nExample: <code>/add_sub 987654321 Rahul 3</code>")
+
+        elif text in ("/subs", "/subscribers"):
+            from app.storage.database import db
+            active_subs = db.get_active_vip_subscribers()
+            if not active_subs:
+                await notifier.send_message("👥 <b>VIP Subscribers:</b> No active subscribers currently.")
+            else:
+                lines = ""
+                for s in active_subs:
+                    lines += f"• <b>{s['name']}</b> (<code>{s['telegram_id']}</code>): {s['plan_months']}mo | Expires: <b>{s['expiry_date']}</b>\n"
+                await notifier.send_message(f"👥 <b>Active VIP Subscribers ({len(active_subs)}):</b>\n\n{lines}")
+
+        elif text.startswith("/remove_sub"):
+            parts = text.split()
+            if len(parts) >= 2:
+                tg_id = parts[1]
+                from app.storage.database import db
+                db.deactivate_vip_subscriber(tg_id)
+                await notifier.send_message(f"✅ Subscriber <code>{tg_id}</code> deactivated.")
+            else:
+                await notifier.send_message("ℹ️ Format: <code>/remove_sub &lt;user_id&gt;</code>")
+
         elif text in ("/help", "/start", "help"):
             reply = (
                 "🤖 <b>Telegram Trading Command Center</b>\n\n"
@@ -1043,6 +1079,9 @@ class DhanOrderExecutor:
                 "• <code>/positions</code> - View open trades on Dhan\n"
                 "• <code>/orders</code> - Check today's Dhan orders\n"
                 "• <code>/status</code> - Scanner & ML engine health\n"
+                "• <code>/subs</code> - View active VIP channel subscribers\n"
+                "• <code>/add_sub &lt;id&gt; &lt;name&gt; &lt;mo&gt;</code> - Enroll VIP paid subscriber\n"
+                "• <code>/remove_sub &lt;id&gt;</code> - Deactivate VIP subscriber\n"
                 "• <code>/token &lt;jwt&gt;</code> - Update Dhan token directly via chat\n\n"
                 "<i>When an ORB breakout occurs, 1-click Buy/Sell buttons will appear right here!</i>"
             )

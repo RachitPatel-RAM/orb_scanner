@@ -243,6 +243,21 @@ class Database:
             );
             """)
 
+            # VIP Channel Subscribers
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vip_subscribers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                plan_months INTEGER NOT NULL,
+                start_date TEXT NOT NULL,
+                expiry_date TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                invite_link TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+
             # Indexes for ultra-fast lookup
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles1m_sec_ts ON candles_1m(security_id, timestamp);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles5m_sec_ts ON candles_5m(security_id, timestamp);")
@@ -540,11 +555,40 @@ class Database:
             row = conn.execute("SELECT * FROM stock_learned_models WHERE symbol = ?", (symbol,)).fetchone()
             return dict(row) if row else None
 
-    def get_all_stock_learned_models(self) -> List[Dict[str, Any]]:
-        """Returns all stock learned models ranked by predictive win rate."""
+    def add_vip_subscriber(self, telegram_id: str, name: str, plan_months: int,
+                           start_date: str, expiry_date: str, invite_link: Optional[str] = None) -> int:
         with self.get_connection() as conn:
-            rows = conn.execute("SELECT * FROM stock_learned_models ORDER BY high_vol_win_rate DESC").fetchall()
+            cur = conn.execute("""
+                INSERT INTO vip_subscribers (telegram_id, name, plan_months, start_date, expiry_date, is_active, invite_link)
+                VALUES (?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(telegram_id) DO UPDATE SET
+                    name = excluded.name,
+                    plan_months = excluded.plan_months,
+                    start_date = excluded.start_date,
+                    expiry_date = excluded.expiry_date,
+                    is_active = 1,
+                    invite_link = excluded.invite_link;
+            """, (telegram_id, name, plan_months, start_date, expiry_date, invite_link))
+            return cur.lastrowid
+
+    def get_active_vip_subscribers(self) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT * FROM vip_subscribers WHERE is_active = 1 ORDER BY expiry_date ASC").fetchall()
             return [dict(r) for r in rows]
+
+    def get_expired_vip_subscribers(self, current_date_str: str) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT * FROM vip_subscribers WHERE is_active = 1 AND expiry_date < ?", (current_date_str,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def deactivate_vip_subscriber(self, telegram_id: str) -> None:
+        with self.get_connection() as conn:
+            conn.execute("UPDATE vip_subscribers SET is_active = 0 WHERE telegram_id = ?", (telegram_id,))
+
+    def get_vip_subscriber(self, telegram_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM vip_subscribers WHERE telegram_id = ?", (telegram_id,)).fetchone()
+            return dict(row) if row else None
 
 
 db = Database()
