@@ -209,3 +209,27 @@ def test_orb_midpoint_stop(base_config):
     orb = ORBLevels(trade_date=d, security_id="100", symbol="RELIANCE", high=2500.0, low=2400.0, mid=2450.0, is_complete=True)
     sl = strategy.calculate_stop_loss(Direction.LONG, entry_price=2510.0, orb=orb)
     assert sl == 2450.0
+
+
+def test_whipsaw_double_sided_breach_filter(base_config):
+    """Verifies that if price breaches/sweeps ORB Low earlier, a subsequent LONG breakout is rejected as chop/whipsaw."""
+    strategy = ORBStrategy(config=base_config)
+    d = date(2026, 10, 1)
+    strategy.reset_day(d)
+
+    orb = ORBLevels(trade_date=d, security_id="500", symbol="HINDPETRO", high=350.0, low=340.0, mid=345.0, is_complete=True)
+    strategy.set_orb_levels(orb)
+
+    # 1. Neutral candle inside range
+    c0 = make_candle("500", "HINDPETRO", "2026-10-01T10:00:00", 344, 346, 342, 345)
+    strategy.on_candle_closed(c0)
+
+    # 2. Candle breaches below ORB Low (340.0) -> marks breached_low = True
+    c_low_sweep = make_candle("500", "HINDPETRO", "2026-10-01T10:30:00", 345, 346, 338, 341)
+    strategy.on_candle_closed(c_low_sweep)
+    assert orb.breached_low is True
+
+    # 3. Later, stock rallies and closes above ORB High (350.0) -> MUST BE REJECTED AS WHIPSAW
+    c_long_breakout = make_candle("500", "HINDPETRO", "2026-10-01T12:00:00", 348, 353, 347, 352)
+    sig = strategy.on_candle_closed(c_long_breakout)
+    assert sig is None, "Long breakout must be blocked because ORB Low was already breached earlier today (whipsaw/chop)."

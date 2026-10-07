@@ -359,6 +359,28 @@ class ORBStrategy:
         long_condition = (candle.close > long_breakout_level) and (prev_close <= long_breakout_level)
         short_condition = (candle.close < short_breakout_level) and (prev_close >= short_breakout_level)
 
+        # Institutional Double-Sided Breach / Whipsaw Trap Check:
+        # If the opposite side was breached or swept earlier today, the stock is in an expanding chop / whipsaw.
+        if long_condition and (getattr(orb, "breached_low", False) or candle.low < short_breakout_level):
+            logger.warning(
+                f"[Whipsaw Trap Filter] Blocked LONG breakout for {symbol}: "
+                f"ORB Low (₹{orb.low:.2f}) was breached/swept earlier today or intra-candle. Expanding chop detected."
+            )
+            long_condition = False
+
+        if short_condition and (getattr(orb, "breached_high", False) or candle.high > long_breakout_level):
+            logger.warning(
+                f"[Whipsaw Trap Filter] Blocked SHORT breakdown for {symbol}: "
+                f"ORB High (₹{orb.high:.2f}) was breached/swept earlier today or intra-candle. Expanding chop detected."
+            )
+            short_condition = False
+
+        # Record breach states for subsequent candles
+        if candle.high > long_breakout_level or candle.close > long_breakout_level:
+            orb.breached_high = True
+        if candle.low < short_breakout_level or candle.close < short_breakout_level:
+            orb.breached_low = True
+
         if self.debug_mode:
             logger.info(
                 f"[ORB DEBUG] Time: {candle.timestamp.strftime('%H:%M')} | Sym: {symbol} | "

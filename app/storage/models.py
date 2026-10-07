@@ -49,6 +49,8 @@ class ORBLevels:
     low: float
     mid: float
     is_complete: bool = False
+    breached_high: bool = False
+    breached_low: bool = False
 
     @property
     def range_size(self) -> float:

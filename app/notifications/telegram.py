@@ -316,7 +316,12 @@ class TelegramNotifier:
         return await self.send_message("[LEARN INDIAN MARKET ✅]", idempotency_key=f"learned_tick_{default_session.now().strftime('%Y%m%d_%H')}")
 
 
-    async def send_signal(self, signal: Signal, candle: Optional[Candle] = None) -> bool:
+    async def send_signal(
+        self,
+        signal: Signal,
+        candle: Optional[Candle] = None,
+        ai_reason_override: Optional[str] = None,
+    ) -> bool:
         """Dispatches rich breakout alert with AI Conviction score and 1-click execution button."""
         from app.trading.order_executor import order_executor
         from app.strategies.ml_learner import ml_learner
@@ -366,17 +371,34 @@ class TelegramNotifier:
         stars = "⭐⭐⭐" if ai_score >= 70 else ("⭐⭐" if ai_score >= 50 else "⚠️")
 
         # 2. Dual AI Ensemble Reasoning
-        groq_task = groq_analyzer.analyze_breakout_fast(signal, candle)
-        gemini_task = gemini_analyzer.analyze_breakout(signal, candle)
-        groq_res, gemini_res = await asyncio.gather(groq_task, gemini_task, return_exceptions=True)
+        if ai_reason_override:
+            clean_reason = ai_reason_override.replace('"', '').strip()
+        else:
+            groq_task = groq_analyzer.analyze_breakout_fast(signal, candle)
+            gemini_task = gemini_analyzer.analyze_breakout(signal, candle)
+            groq_res, gemini_res = await asyncio.gather(groq_task, gemini_task, return_exceptions=True)
 
-        ai_reason = "Strong institutional follow-through confirmed."
-        if isinstance(gemini_res, dict) and gemini_res.get("reasoning"):
-            ai_reason = gemini_res["reasoning"]
-        elif isinstance(groq_res, dict) and groq_res.get("reasoning"):
-            ai_reason = groq_res["reasoning"]
+            groq_verdict = groq_res.get("verdict", "") if isinstance(groq_res, dict) else ""
+            gemini_verdict = gemini_res.get("verdict", "") if isinstance(gemini_res, dict) else ""
 
-        clean_reason = ai_reason.replace('"', '').strip()
+            ai_reason = "Strong institutional follow-through confirmed."
+            if isinstance(gemini_res, dict) and gemini_res.get("reasoning"):
+                ai_reason = gemini_res["reasoning"]
+            elif isinstance(groq_res, dict) and groq_res.get("reasoning"):
+                ai_reason = groq_res["reasoning"]
+
+            clean_reason = ai_reason.replace('"', '').strip()
+
+            # Safeguard Veto: Never broadcast an alert if AI flags caution, trap, or lack of volume!
+            if (
+                "CAUTION" in groq_verdict
+                or "CAUTION" in gemini_verdict
+                or "false move" in clean_reason.lower()
+                or "lacks" in clean_reason.lower()
+                or "trap" in clean_reason.lower()
+            ):
+                logger.warning(f"[Telegram Veto] Suppressing alert for {signal.symbol}: AI flagged CAUTION/TRAP: {clean_reason}")
+                return False
 
         # Clean, simple alert with exact options pricing if index
         if opt_info:
