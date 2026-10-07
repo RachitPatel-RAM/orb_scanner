@@ -157,6 +157,7 @@ class LiveEngine:
                     entry_price=sig.entry_price,
                     stop_loss=sig.stop_loss,
                     target=sig.target,
+                    candle=candle,
                 )
                 if not confluence.is_valid:
                     logger.warning(
@@ -164,6 +165,19 @@ class LiveEngine:
                         f"{confluence.rejection_reason}"
                     )
                     return
+
+                # Adopt dynamic structural Target and Stop Loss from SMC / Pivots / OI (Not rigid 1:2)
+                if confluence.structural_target and confluence.structural_stop_loss:
+                    sig.target = confluence.structural_target
+                    sig.stop_loss = confluence.structural_stop_loss
+                    if confluence.structural_rr:
+                        sig.risk_reward = confluence.structural_rr
+                    logger.info(
+                        f"[Structural Levels] {sig.symbol} {sig.direction.value}: "
+                        f"Target=₹{sig.target:.2f} ({confluence.target_milestone}), "
+                        f"SL=₹{sig.stop_loss:.2f} ({confluence.sl_milestone}), R:R=1:{sig.risk_reward:g}"
+                    )
+
                 logger.info(f"[Confluence Confirmed] {sig.symbol} {sig.direction.value}: {confluence.summary_text}")
             except Exception as e:
                 logger.debug(f"Confluence evaluation note for {sig.symbol}: {e}")

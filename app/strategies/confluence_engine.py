@@ -14,7 +14,7 @@ import httpx
 from app.config import logger, settings
 from app.dhan.auth import auth
 from app.storage.database import db
-from app.storage.models import Direction
+from app.storage.models import Candle, Direction
 
 
 @dataclass
@@ -47,6 +47,11 @@ class ConfluenceResult:
     distance_to_trap_pct: float
     confluence_score: int       # 0 - 100
     summary_text: str
+    structural_target: Optional[float] = None
+    structural_stop_loss: Optional[float] = None
+    structural_rr: Optional[float] = None
+    target_milestone: Optional[str] = None
+    sl_milestone: Optional[str] = None
 
 
 class ConfluenceEngine:
@@ -178,11 +183,13 @@ class ConfluenceEngine:
         entry_price: float,
         stop_loss: float,
         target: float,
+        candle: Optional[Candle] = None,
     ) -> ConfluenceResult:
         """
         Validates breakout against Pivots and Open Interest:
         1. SHORT: Rejects if price is right into S1/S2 support or OI Put Wall Support Strike.
         2. LONG: Rejects if price is right into R1/R2 resistance or OI Call Wall Resistance Strike.
+        3. Computes dynamic structural Target & Stop Loss from Pivots, Liquidity & OI (not rigid 1:2).
         """
         pivots = await self.get_daily_pivots(symbol)
         oi = await self.get_dhan_oi_profile(security_id, symbol)
@@ -252,6 +259,92 @@ class ConfluenceEngine:
 
         is_valid = rejection_reason is None
 
+        # 3. Dynamic Structural Target & Stop Loss Calculation (SMC & Multi-Confluence)
+        struct_sl = stop_loss
+        sl_milestone = "ORB Support Floor" if direction == Direction.LONG else "ORB Resistance Ceiling"
+        struct_target = target
+        target_milestone = "Measured Move"
+        struct_rr = 2.0
+
+        if is_valid:
+            # A. Calculate Structural Stop Loss
+            if candle:
+                if direction == Direction.LONG:
+                    c_risk = entry_price - candle.low
+                    if candle.low < entry_price and c_risk >= (entry_price * 0.0025):
+                        struct_sl = round(candle.low - 0.05, 2)
+                        sl_milestone = "Breakout Candle Low"
+                    else:
+                        struct_sl = stop_loss
+                        sl_milestone = "ORB Support Floor"
+                else:
+                    c_risk = candle.high - entry_price
+                    if candle.high > entry_price and c_risk >= (entry_price * 0.0025):
+                        struct_sl = round(candle.high + 0.05, 2)
+                        sl_milestone = "Breakout Candle High"
+                    else:
+                        struct_sl = stop_loss
+                        sl_milestone = "ORB Resistance Ceiling"
+
+            risk = abs(entry_price - struct_sl)
+            if risk <= 0.05:
+                risk = max(0.50, round(entry_price * 0.005, 2))
+                struct_sl = round(entry_price - risk, 2) if direction == Direction.LONG else round(entry_price + risk, 2)
+
+            # B. Calculate Structural Target (Pivots R1/R2/R3 or S1/S2/S3 & OI Walls)
+            if direction == Direction.LONG:
+                candidates: List[Tuple[float, str]] = []
+                if pivots:
+                    if pivots.r1 > entry_price and ((pivots.r1 - entry_price) / risk) >= 1.2:
+                        candidates.append((pivots.r1, "Pivot R1 Resistance"))
+                    if pivots.r2 > entry_price and ((pivots.r2 - entry_price) / risk) >= 1.5:
+                        candidates.append((pivots.r2, "Pivot R2 Liquidity Pool"))
+                    if pivots.r3 > entry_price and ((pivots.r3 - entry_price) / risk) >= 2.0:
+                        candidates.append((pivots.r3, "Pivot R3 Expansion"))
+
+                if oi and oi.resistance_strike > entry_price:
+                    if ((oi.resistance_strike - entry_price) / risk) >= 1.4:
+                        candidates.append((oi.resistance_strike, "Call OI Wall Target"))
+
+                if candidates:
+                    sweet_spot = [c for c in candidates if 1.4 <= ((c[0] - entry_price) / risk) <= 3.2]
+                    chosen = sweet_spot[0] if sweet_spot else candidates[0]
+                    struct_target = round(chosen[0], 2)
+                    target_milestone = chosen[1]
+                else:
+                    struct_target = round(entry_price + (risk * 2.0), 2)
+                    target_milestone = "2x Measured Move"
+
+                struct_rr = round((struct_target - entry_price) / risk, 1)
+
+            else:
+                candidates: List[Tuple[float, str]] = []
+                if pivots:
+                    if pivots.s1 < entry_price and ((entry_price - pivots.s1) / risk) >= 1.2:
+                        candidates.append((pivots.s1, "Pivot S1 Support"))
+                    if pivots.s2 < entry_price and ((entry_price - pivots.s2) / risk) >= 1.5:
+                        candidates.append((pivots.s2, "Pivot S2 Liquidity Pool"))
+                    if pivots.s3 < entry_price and ((entry_price - pivots.s3) / risk) >= 2.0:
+                        candidates.append((pivots.s3, "Pivot S3 Expansion"))
+
+                if oi and oi.support_strike < entry_price:
+                    if ((entry_price - oi.support_strike) / risk) >= 1.4:
+                        candidates.append((oi.support_strike, "Put OI Wall Target"))
+
+                if candidates:
+                    sweet_spot = [c for c in candidates if 1.4 <= ((entry_price - c[0]) / risk) <= 3.2]
+                    chosen = sweet_spot[0] if sweet_spot else candidates[0]
+                    struct_target = round(chosen[0], 2)
+                    target_milestone = chosen[1]
+                else:
+                    struct_target = round(entry_price - (risk * 2.0), 2)
+                    target_milestone = "2x Measured Move"
+
+                struct_rr = round((entry_price - struct_target) / risk, 1)
+
+            summary_lines.append(f"Target: ₹{struct_target:.2f} (1:{struct_rr:g} | {target_milestone})")
+            summary_lines.append(f"Stop: ₹{struct_sl:.2f} ({sl_milestone})")
+
         return ConfluenceResult(
             is_valid=is_valid,
             rejection_reason=rejection_reason,
@@ -260,6 +353,11 @@ class ConfluenceEngine:
             distance_to_trap_pct=dist_to_trap_pct,
             confluence_score=confluence_score if is_valid else 30,
             summary_text=" | ".join(summary_lines) if summary_lines else "Standard Multi-Confluence Checked",
+            structural_target=struct_target,
+            structural_stop_loss=struct_sl,
+            structural_rr=struct_rr,
+            target_milestone=target_milestone,
+            sl_milestone=sl_milestone,
         )
 
 

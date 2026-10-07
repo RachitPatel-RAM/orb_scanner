@@ -111,3 +111,32 @@ def test_fvg_strategy_blocks_counter_htf_setup():
     )
     assert setup_long is not None
     assert setup_long.direction == Direction.LONG
+
+
+@pytest.mark.asyncio
+async def test_confluence_structural_target_and_sl():
+    from app.strategies.confluence_engine import confluence_engine, PivotLevels
+    from datetime import date
+
+    # Mock pivots: Pivot=100, S1=95, S2=90, R1=105, R2=110, R3=115
+    pivots = PivotLevels(pivot=100.0, r1=105.0, r2=110.0, r3=115.0, s1=95.0, s2=90.0, s3=85.0)
+    confluence_engine._pivot_cache["TEST_STOCK"] = (date.today(), pivots)
+
+    # Long breakout with entry at 102 (below R1) and candle low at 100.5
+    c_long = Candle(security_id="999", symbol="TEST_STOCK", timestamp=datetime.now(), open=101.0, high=102.5, low=100.5, close=102.0, volume=5000)
+    res = await confluence_engine.evaluate_confluence(
+        security_id="999",
+        symbol="TEST_STOCK",
+        direction=Direction.LONG,
+        entry_price=102.0,
+        stop_loss=98.0,
+        target=106.0,
+        candle=c_long,
+    )
+    assert res.is_valid is True
+    # Stop loss placed structurally at candle low - 0.05 = 100.45
+    assert res.structural_stop_loss == 100.45
+    # Target chosen dynamically from structural pivots (R1 or R2), not a blind rigid 1:2
+    assert res.structural_target in (105.0, 110.0)
+    assert res.structural_rr is not None
+    assert res.structural_rr >= 1.4
