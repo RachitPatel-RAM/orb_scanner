@@ -315,12 +315,42 @@ class DhanOrderExecutor:
                     f"• <i>Simulated fill recorded in paper portfolio. Zero broker order routed.</i>"
                 )
             else:
-                return "STAGED", True, (
-                    f"📋 <b>Option Setup Staged:</b> Buy {lot_multiplier} Lot(s) of <b>{opt_contract.custom_symbol}</b> "
-                    f"({opt_contract.lot_size * lot_multiplier} Qty) @ ₹{opt_contract.ltp:,.2f} | "
-                    f"SL: ₹{opt_contract.stop_loss_premium:,.2f} | Target: ₹{opt_contract.target_premium:,.2f}.\n\n"
-                    f"⚡ <i>Manual execution required via Dhan App or Web Option Chain (Zero API order sent).</i>"
+                # Live order execution on Dhan for options
+                opt_qty = opt_contract.lot_size * lot_multiplier
+                logger.info(
+                    f"[LIVE_OPTION_ORDER] Submitting Live Dhan Option Order: BUY {opt_qty} Qty "
+                    f"of {opt_contract.custom_symbol} ({opt_contract.security_id}) | Segment: {opt_contract.exchange_segment} | "
+                    f"SL: ₹{opt_contract.stop_loss_premium:.2f} | Target: ₹{opt_contract.target_premium:.2f}"
                 )
+                try:
+                    loop = asyncio.get_event_loop()
+                    res = await loop.run_in_executor(
+                        None,
+                        lambda: self.client.place_order(
+                            security_id=str(opt_contract.security_id),
+                            exchange_segment=opt_contract.exchange_segment,
+                            transaction_type=txn_type,
+                            quantity=opt_qty,
+                            order_type="MARKET",
+                            product_type="INTRADAY",
+                            price=0,
+                            tag=f"OPT_{opt_contract.security_id}"[:15],
+                        )
+                    )
+                    parsed_status, parsed_ok, parsed_msg = self._parse_dhan_response(res, opt_qty, opt_contract.ltp)
+                    if parsed_ok:
+                        return parsed_status, parsed_ok, (
+                            f"🚀 <b>Live Option Order Placed on Dhan:</b>\n"
+                            f"• {txn_type} {lot_multiplier} Lot(s) ({opt_qty} Qty) of <b>{opt_contract.custom_symbol}</b>\n"
+                            f"• Entry LTP: ₹{opt_contract.ltp:,.2f} | Est Cost: ₹{purchase_cost:,.2f}\n"
+                            f"• SL: ₹{opt_contract.stop_loss_premium:,.2f} | Target: ₹{opt_contract.target_premium:,.2f}\n"
+                            f"• Status: {parsed_status} | {parsed_msg}"
+                        )
+                    else:
+                        return parsed_status, parsed_ok, parsed_msg
+                except Exception as e:
+                    logger.error(f"Error placing live Dhan option order: {e}")
+                    return "FAILED", False, f"Live Option Execution Exception: {str(e)}"
 
         logger.info(
             f"Placing Dhan Order: {txn_type} {symbol} ({sec_id}) Lots={lot_multiplier} Qty={qty} Price={price} "

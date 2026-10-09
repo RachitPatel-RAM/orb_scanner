@@ -220,6 +220,9 @@ class AppSettings:
         self.live_order_enabled: bool = (
             os.getenv("LIVE_ORDER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )
+        self.auto_approve_orders: bool = (
+            os.getenv("AUTO_APPROVE_ORDERS", "false").strip().lower() in ("true", "1", "yes")
+        )
         self.session_context_enabled: bool = (
             os.getenv("SESSION_CONTEXT_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )

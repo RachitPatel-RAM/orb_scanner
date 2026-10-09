@@ -661,6 +661,23 @@ class TelegramNotifier:
             reply_markup=reply_markup,
         )
 
+        # 1.5 Autonomous Execution Engine (Zero-Click Mode when AUTO_APPROVE_ORDERS=true)
+        if getattr(settings, "auto_approve_orders", False) and getattr(settings, "live_order_enabled", False):
+            try:
+                sig_key = f"{signal.security_id}_{int(signal.timestamp.timestamp())}"
+                order_data = order_executor._pending_orders.get(sig_key)
+                if order_data:
+                    logger.info(f"[AUTONOMOUS_EXECUTION] Auto-executing live order for {signal.symbol} ({sig_key})")
+                    async def _auto_exec_task():
+                        st_cat, ok, res_msg = await order_executor.execute_dhan_order(order_data, lot_multiplier=1)
+                        if ok:
+                            await self.send_message(f"⚡ <b>Auto-Order Executed on Dhan:</b>\n\n{res_msg}")
+                        else:
+                            await self.send_message(f"⚠️ <b>Auto-Order Execution Alert:</b>\n\n{res_msg}")
+                    asyncio.create_task(_auto_exec_task())
+            except Exception as e:
+                logger.error(f"Error in autonomous order execution: {e}")
+
         # 2. Format & Send to Public Channel (TradeBees / Green Candle Style, NO BUTTONS)
         if self.public_channel_id:
             today_iso = signal.trade_date.isoformat()
