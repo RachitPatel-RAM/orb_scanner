@@ -100,8 +100,8 @@ class LiveEngine:
             self.strategy.register_orb_candle(candle)
             return
 
-        # 2. Check for breakout signals if 5m signal timeframe is active
-        if settings.strategy.signal_timeframe == 5:
+        # 2. Check for breakout signals if 5m signal timeframe is active and ORB is enabled
+        if getattr(settings, "enable_orb_strategy", False) and settings.strategy.signal_timeframe == 5:
             signal = self.strategy.on_candle_closed(candle)
             if signal:
                 self._handle_signal(signal, candle)
@@ -115,8 +115,8 @@ class LiveEngine:
             self.strategy.register_orb_candle(candle)
             return
 
-        # 2. Check for breakout signals if 15m signal timeframe is active
-        if settings.strategy.signal_timeframe == 15:
+        # 2. Check for breakout signals if 15m signal timeframe is active and ORB is enabled
+        if getattr(settings, "enable_orb_strategy", False) and settings.strategy.signal_timeframe == 15:
             # Query recent 15m candles to calculate 20-period average volume for verified institutional expansion
             try:
                 recent_vols = db.get_recent_candles_15m(candle.security_id, limit=20)
@@ -438,14 +438,15 @@ class LiveEngine:
                     if now >= orb_end_dt:
                         self.strategy.finalize_orb_levels(now.date(), inst.security_id, inst.symbol)
 
-                        # Replay post-10:00 candles through breakout checker
-                        for c in candles:
-                            c_time = default_session.localize(c.timestamp)
-                            if c_time >= orb_end_dt:
-                                sig = self.strategy.process_candle(c)
-                                if sig:
-                                    self._on_signal_generated(sig, candle=c)
-                                    break
+                        # Replay post-10:00 candles through breakout checker (only if ORB enabled)
+                        if getattr(settings, "enable_orb_strategy", False):
+                            for c in candles:
+                                c_time = default_session.localize(c.timestamp)
+                                if c_time >= orb_end_dt:
+                                    sig = self.strategy.process_candle(c)
+                                    if sig:
+                                        self._on_signal_generated(sig, candle=c)
+                                        break
                 except Exception as e:
                     logger.debug(f"Error recovering intraday candles for {inst.symbol}: {e}")
 

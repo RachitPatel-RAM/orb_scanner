@@ -92,6 +92,7 @@ class FastScalpSetup:
     exit_price: float = 0.0
     lot_size: int = 75
     trailed_to_cost: bool = False
+    opt_contract: Optional[OptionContractInfo] = None
 
 
 class FastScalpEngine:
@@ -206,6 +207,7 @@ class FastScalpEngine:
                     setup_source="PRE_MARKET",
                     status="PENDING",
                     lot_size=lot_size,
+                    opt_contract=opt_info,
                 )
 
         return best_setup
@@ -305,6 +307,7 @@ class FastScalpEngine:
             status="ACTIVE",
             entry_time=default_session.now(),
             lot_size=lot_size,
+            opt_contract=opt_info,
         )
 
         self._active_scalps[key] = setup
@@ -336,7 +339,43 @@ class FastScalpEngine:
         ]
 
         text = "\n".join(lines)
-        return await self._dispatch_to_all_channels(text, idemp)
+        dispatched = await self._dispatch_to_all_channels(text, idemp)
+
+        # Live Dhan execution at 09:15:00 open when LIVE_ORDER_ENABLED=true
+        if getattr(settings, "live_order_enabled", False) and setup.opt_contract:
+            async def _schedule_0915_open_order():
+                now_dt = default_session.now()
+                open_dt = datetime.combine(setup.trade_date, time(9, 15, 0))
+                try:
+                    open_dt = default_session.tz.localize(open_dt)
+                except Exception:
+                    pass
+                wait_sec = max(0.0, (open_dt - now_dt).total_seconds())
+                if wait_sec > 0:
+                    await asyncio.sleep(wait_sec)
+                try:
+                    from app.trading.order_executor import order_executor
+                    order_data = {
+                        "security_id": setup.opt_contract.security_id,
+                        "symbol": setup.opt_contract.underlying,
+                        "direction": setup.direction,
+                        "entry_price": setup.opt_contract.ltp,
+                        "stop_loss": setup.stop_loss,
+                        "target": setup.target_1,
+                        "lot_size": setup.lot_size,
+                        "margin_req": setup.opt_contract.margin_required,
+                        "opt_contract": setup.opt_contract,
+                    }
+                    st_cat, ok, res_msg = await order_executor.execute_dhan_order(order_data, lot_multiplier=1)
+                    if ok:
+                        await notifier.send_message(f"🚀 <b>Live Pre-Market Scalp Executed on Dhan:</b>\n\n{res_msg}")
+                    else:
+                        await notifier.send_message(f"⚠️ <b>Live Pre-Market Scalp Order Alert:</b>\n\n{res_msg}")
+                except Exception as e:
+                    logger.error(f"Error placing live pre-market scalp order on Dhan: {e}")
+            asyncio.create_task(_schedule_0915_open_order())
+
+        return dispatched
 
     async def broadcast_0916_scalp_alert(self, setup: FastScalpSetup) -> bool:
         """Dispatches short, clean, tap-to-copy 09:16 AM Opening Momentum scalp alert."""
@@ -364,7 +403,34 @@ class FastScalpEngine:
         ]
 
         text = "\n".join(lines)
-        return await self._dispatch_to_all_channels(text, idemp)
+        dispatched = await self._dispatch_to_all_channels(text, idemp)
+
+        # Live Dhan execution at 09:16:00 when LIVE_ORDER_ENABLED=true
+        if getattr(settings, "live_order_enabled", False) and setup.opt_contract:
+            try:
+                from app.trading.order_executor import order_executor
+                order_data = {
+                    "security_id": setup.opt_contract.security_id,
+                    "symbol": setup.opt_contract.underlying,
+                    "direction": setup.direction,
+                    "entry_price": setup.opt_contract.ltp,
+                    "stop_loss": setup.stop_loss,
+                    "target": setup.target_1,
+                    "lot_size": setup.lot_size,
+                    "margin_req": setup.opt_contract.margin_required,
+                    "opt_contract": setup.opt_contract,
+                }
+                async def _exec_0916_scalp():
+                    st_cat, ok, res_msg = await order_executor.execute_dhan_order(order_data, lot_multiplier=1)
+                    if ok:
+                        await notifier.send_message(f"🚀 <b>Live 09:16 Scalp Executed on Dhan:</b>\n\n{res_msg}")
+                    else:
+                        await notifier.send_message(f"⚠️ <b>Live 09:16 Scalp Order Alert:</b>\n\n{res_msg}")
+                asyncio.create_task(_exec_0916_scalp())
+            except Exception as e:
+                logger.error(f"Error placing live 09:16 scalp order on Dhan: {e}")
+
+        return dispatched
 
     async def broadcast_no_trade_advisory(self, trade_date: Optional[date] = None) -> bool:
         """Dispatches concise capital protection advisory (no proprietary terminology)."""

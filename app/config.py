@@ -223,6 +223,9 @@ class AppSettings:
         self.auto_approve_orders: bool = (
             os.getenv("AUTO_APPROVE_ORDERS", "false").strip().lower() in ("true", "1", "yes")
         )
+        self.enable_orb_strategy: bool = (
+            os.getenv("ENABLE_ORB_STRATEGY", "false").strip().lower() in ("true", "1", "yes")
+        )
         self.session_context_enabled: bool = (
             os.getenv("SESSION_CONTEXT_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )
