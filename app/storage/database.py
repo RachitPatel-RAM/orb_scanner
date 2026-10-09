@@ -445,6 +445,52 @@ class Database:
             );
             """)
 
+            # Audit Scalp Sessions (Historical Benchmark & Daily Journal)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_scalp_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_num INTEGER,
+                trade_date TEXT UNIQUE,
+                nifty_open REAL,
+                nifty_high REAL,
+                nifty_low REAL,
+                nifty_close REAL,
+                gap_pts REAL,
+                setup_type TEXT,
+                trade_direction TEXT,
+                outcome TEXT,
+                gross_pnl REAL,
+                brokerage_taxes REAL,
+                net_pnl REAL,
+                running_capital REAL,
+                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+
+            # Auto-seed from scalp_audit_monthly.json if table is empty
+            try:
+                cursor.execute("SELECT COUNT(*) FROM audit_scalp_sessions")
+                if cursor.fetchone()[0] == 0:
+                    json_path = Path(self.db_path).parent / "scalp_audit_monthly.json"
+                    if json_path.exists():
+                        import json
+                        with open(json_path, "r", encoding="utf-8") as f:
+                            s_data = json.load(f)
+                        for t in s_data.get("sessions", []):
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO audit_scalp_sessions (
+                                    session_num, trade_date, nifty_open, nifty_high, nifty_low, nifty_close,
+                                    gap_pts, setup_type, trade_direction, outcome, gross_pnl, brokerage_taxes,
+                                    net_pnl, running_capital
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                t["session_num"], t["date"], t["nifty_open"], t["nifty_high"], t["nifty_low"],
+                                t["nifty_close"], t["gap_pts"], t["setup_type"], t["trade_direction"],
+                                t["outcome"], t["gross_pnl"], t["brokerage_taxes"], t["net_pnl"], t["running_capital"]
+                            ))
+            except Exception as e:
+                logger.debug(f"Error seeding audit_scalp_sessions: {e}")
+
             # Indexes for ultra-fast lookup
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles1m_sec_ts ON candles_1m(security_id, timestamp);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles5m_sec_ts ON candles_5m(security_id, timestamp);")

@@ -495,6 +495,8 @@ class DhanOrderExecutor:
         # Register Telegram bot commands menu so typing '/' displays options
         try:
             cmds = [
+                {"command": "10", "description": "Quick audit report for last 10 sessions (/5, /10, /20)"},
+                {"command": "journal", "description": "View historical scalp journal & performance"},
                 {"command": "bias", "description": "Check Daily Bias & Intraday Context via /bias <sym>"},
                 {"command": "health", "description": "System health and operational profile audit"},
                 {"command": "balance", "description": "Check live Dhan margin and funds"},
@@ -543,6 +545,114 @@ class DhanOrderExecutor:
                 except Exception as e:
                     logger.debug(f"Telegram listener polling cycle error: {e}")
                     await asyncio.sleep(2)
+
+    def format_scalp_journal_telegram(self, limit: int = 10) -> str:
+        """
+        Queries persistent SQLite audit table and formats a clean,
+        auditable report for the last N sessions.
+        """
+        import sqlite3
+        from pathlib import Path
+        db_file = Path(settings.database_path)
+        if not db_file.exists():
+            return "⚠️ No journal database found."
+
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        try:
+            cur.execute("""
+                SELECT session_num, trade_date, nifty_open, gap_pts, setup_type,
+                       trade_direction, outcome, net_pnl, running_capital
+                FROM audit_scalp_sessions
+                ORDER BY trade_date ASC
+            """)
+            rows = cur.fetchall()
+        except Exception as e:
+            conn.close()
+            return f"⚠️ Error querying journal: {e}"
+        conn.close()
+
+        if not rows:
+            return "ℹ️ No recorded scalp sessions in journal database yet."
+
+        selected_rows = rows[-limit:] if limit < len(rows) else rows
+        total_trades = 0
+        wins = 0
+        shields = 0
+        losses = 0
+        skips = 0
+        total_net = 0.0
+
+        start_cap = selected_rows[0]["running_capital"] - selected_rows[0]["net_pnl"]
+
+        day_lines = []
+        for r in selected_rows:
+            d_str = r["trade_date"]
+            try:
+                from datetime import datetime
+                d_obj = datetime.strptime(d_str, "%Y-%m-%d").date()
+                d_fmt = d_obj.strftime("%d-%b")
+            except Exception:
+                d_fmt = d_str
+
+            dir_str = r["trade_direction"]
+            outcome = r["outcome"]
+            net = float(r["net_pnl"])
+            total_net += net
+
+            if dir_str != "NO_TRADE":
+                total_trades += 1
+                if "TARGET_HIT" in outcome:
+                    wins += 1
+                    day_lines.append(f"• <b>{d_fmt}:</b> {dir_str} ➔ 🎯 <b>TARGET (+28 pts)</b> | +₹{net:,.1f}")
+                elif "COST_SHIELD" in outcome:
+                    shields += 1
+                    day_lines.append(f"• <b>{d_fmt}:</b> {dir_str} ➔ 🛡️ <b>COST SHIELD (+1.0 pt)</b> | +₹{net:,.1f}")
+                elif "STOP_LOSS" in outcome:
+                    losses += 1
+                    day_lines.append(f"• <b>{d_fmt}:</b> {dir_str} ➔ 🛑 <b>STOP LOSS (-12 pts)</b> | -₹{abs(net):,.1f}")
+                else:
+                    day_lines.append(f"• <b>{d_fmt}:</b> {dir_str} ➔ {outcome} | ₹{net:,.1f}")
+            else:
+                skips += 1
+                day_lines.append(f"• <b>{d_fmt}:</b> NO TRADE ➔ 💎 <b>Chop Defended (₹0.00)</b>")
+
+        end_cap = selected_rows[-1]["running_capital"]
+        roi = (total_net / start_cap * 100.0) if start_cap else 0.0
+        defense_rate = ((wins + shields) / max(1, total_trades)) * 100.0 if total_trades else 0.0
+
+        period_start = selected_rows[0]["trade_date"]
+        period_end = selected_rows[-1]["trade_date"]
+
+        lines = [
+            f"📊 <b>BORN BULL SCALP AUDIT ({len(selected_rows)} SESSIONS)</b>",
+            "━━━━━━━━━━━━━━━━━━━━━",
+            f"📅 <b>Period:</b> {period_start} ➔ {period_end}",
+            f"💰 <b>Starting Balance:</b> ₹{start_cap:,.2f}",
+            f"💎 <b>Ending Balance:</b> ₹{end_cap:,.2f}",
+            f"💸 <b>Net P&L:</b> <b>{'+₹' if total_net >= 0 else '-₹'}{abs(total_net):,.2f} ({roi:+.1f}% ROI)</b> 🔥",
+            f"🛡️ <b>Capital Defense Rate:</b> <b>{defense_rate:.1f}%</b>",
+            f"🎯 <b>Targets Hit:</b> {wins} | 🛡️ <b>Cost Shields:</b> {shields} | 🛑 <b>Losses:</b> {losses}",
+            f"💎 <b>Chop Days Defended:</b> {skips} days (₹0 loss)",
+            "━━━━━━━━━━━━━━━━━━━━━",
+            "📈 <b>Recent Day-by-Day Breakdown:</b>",
+        ]
+
+        if len(day_lines) > 20:
+            lines.extend(day_lines[:5])
+            lines.append(f"<i>... [{len(day_lines) - 10} sessions omitted for brevity] ...</i>")
+            lines.extend(day_lines[-5:])
+        else:
+            lines.extend(day_lines)
+
+        lines.extend([
+            "━━━━━━━━━━━━━━━━━━━━━",
+            "👑 <i>100% Real Data. Dhan Brokerage & Taxes Deducted.</i>",
+        ])
+
+        return "\n".join(lines)
 
     async def get_indices_orb_report(self, target_date: Optional[date] = None) -> str:
         """Alias for get_daily_indices_orb_message."""
@@ -1249,6 +1359,25 @@ class DhanOrderExecutor:
         # -------------------------------------------------------------
         # 2. Authorized Admin Commands (Dhan Execution & Management)
         # -------------------------------------------------------------
+        clean_text = text.strip()
+        is_num_cmd = False
+        num_days = 10
+        if clean_text.startswith("/") and clean_text[1:].isdigit():
+            is_num_cmd = True
+            num_days = int(clean_text[1:])
+        elif clean_text.startswith(("/journal", "/audit", "/report", "journal", "audit", "report")):
+            is_num_cmd = True
+            parts = clean_text.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                num_days = int(parts[1])
+            else:
+                num_days = 10
+
+        if is_num_cmd:
+            report_msg = self.format_scalp_journal_telegram(limit=num_days)
+            await notifier.send_message(report_msg)
+            return
+
         if text in ("/balance", "/funds", "/limit", "/limits", "balance", "funds", "limit", "limits"):
             try:
                 headers = auth.get_headers()
