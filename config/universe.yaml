@@ -1,11 +1,17 @@
 # Universe configuration
-# Modes supported: 'custom', 'nifty50', 'fno', 'all_nse_equity'
-mode: fno
+# Modes supported: 'indices_only', 'custom', 'nifty50', 'fno', 'all_nse_equity'
+mode: indices_only
 
 # Exchange and Segment settings
 exchange: NSE
-exchange_segment: NSE_EQ
-instrument_type: EQUITY
+exchange_segment: IDX_I
+instrument_type: INDEX
+
+# Major Core Indices
+indices_symbols:
+  - NIFTY
+  - BANKNIFTY
+  - SENSEX
 
 # Custom symbol list (used when mode: custom)
 custom_symbols:

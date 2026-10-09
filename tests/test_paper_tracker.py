@@ -16,6 +16,7 @@ from app.trading.paper_tracker import PaperTracker, calculate_trade_costs
 def clean_test_trades():
     yield
     with db.get_connection() as conn:
+        conn.execute("DELETE FROM paper_account_ledger WHERE trade_id IS NULL OR trade_id IN (SELECT id FROM paper_trades WHERE signal_id IS NULL)")
         conn.execute("DELETE FROM paper_trades WHERE signal_id IS NULL")
 
 

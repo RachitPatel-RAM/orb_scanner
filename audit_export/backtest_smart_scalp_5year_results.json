@@ -1,0 +1,76 @@
+{
+  "starting_capital": 30000.0,
+  "ending_balance": 969836.0,
+  "net_profit": 939836.0,
+  "roi_pct": 3132.7866666666664,
+  "total_trades": 887,
+  "wins": 588,
+  "losses": 134,
+  "breakevens": 165,
+  "win_rate": 66.29086809470124,
+  "capital_preservation_rate": 84.89289740698986,
+  "max_drawdown": 4332.0,
+  "max_drawdown_pct": 0.4466734581929315,
+  "yearly_breakdown": {
+    "2021": {
+      "start_bal": 30000.0,
+      "trades": 40,
+      "wins": 29,
+      "losses": 5,
+      "be": 6,
+      "fees": 4880.0,
+      "net_profit": 48257.5,
+      "end_bal": 78257.5
+    },
+    "2022": {
+      "start_bal": 78257.5,
+      "trades": 177,
+      "wins": 103,
+      "losses": 30,
+      "be": 44,
+      "fees": 21594.0,
+      "net_profit": 156118.5,
+      "end_bal": 234376.0
+    },
+    "2023": {
+      "start_bal": 234376.0,
+      "trades": 185,
+      "wins": 116,
+      "losses": 28,
+      "be": 41,
+      "fees": 22570.0,
+      "net_profit": 182780.0,
+      "end_bal": 417156.0
+    },
+    "2024": {
+      "start_bal": 417156.0,
+      "trades": 174,
+      "wins": 109,
+      "losses": 29,
+      "be": 36,
+      "fees": 21228.0,
+      "net_profit": 169309.5,
+      "end_bal": 586465.5
+    },
+    "2025": {
+      "start_bal": 586465.5,
+      "trades": 178,
+      "wins": 130,
+      "losses": 30,
+      "be": 18,
+      "fees": 21716.0,
+      "net_profit": 209659.0,
+      "end_bal": 796124.5
+    },
+    "2026": {
+      "start_bal": 796124.5,
+      "trades": 133,
+      "wins": 101,
+      "losses": 12,
+      "be": 20,
+      "fees": 16226.0,
+      "net_profit": 173711.5,
+      "end_bal": 969836.0
+    }
+  }
+}

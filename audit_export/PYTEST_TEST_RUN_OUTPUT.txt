@@ -1,0 +1,133 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-9.1.1, pluggy-1.6.0 -- D:\micro tool\paper_lab\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: D:\micro tool\paper_lab
+configfile: pytest.ini
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 96 items
+
+tests/test_audit_validation.py::test_paper_mode_makes_zero_broker_order_submission_calls PASSED [  1%]
+tests/test_audit_validation.py::test_missing_or_invalid_quotes_create_zero_trades PASSED [  2%]
+tests/test_audit_validation.py::test_insufficient_funds_produce_skipped_entry_and_unchanged_balance PASSED [  3%]
+tests/test_audit_validation.py::test_finalized_range_is_immutable_to_late_candles PASSED [  4%]
+tests/test_audit_validation.py::test_indices_breakout_scanner_rejects_signals_before_1015 PASSED [  5%]
+tests/test_audit_validation.py::test_indices_breakout_routes_through_canonical_orb_strategy PASSED [  6%]
+tests/test_audit_validation.py::test_broker_response_distinct_statuses_handling PASSED [  7%]
+tests/test_audit_validation.py::test_paper_option_execution_establishes_simulated_fill_and_ledger PASSED [  8%]
+tests/test_audit_validation.py::test_future_candles_cannot_change_earlier_signal PASSED [  9%]
+tests/test_bias_gate.py::test_bullish_daily_long_candidate_passes PASSED [ 10%]
+tests/test_bias_gate.py::test_bullish_daily_short_candidate_blocked PASSED [ 11%]
+tests/test_bias_gate.py::test_bullish_daily_opposed_by_bearish_or_conflict_context_blocks PASSED [ 12%]
+tests/test_bias_gate.py::test_bearish_daily_matrix PASSED                [ 13%]
+tests/test_bias_gate.py::test_neutral_and_data_unavailable_block_in_strict_profile PASSED [ 14%]
+tests/test_bias_gate.py::test_shadow_mode_records_decision_without_altering_baseline PASSED [ 15%]
+tests/test_candle_builder.py::test_1m_candle_building PASSED             [ 16%]
+tests/test_candle_builder.py::test_5m_candle_aggregation PASSED          [ 17%]
+tests/test_candle_builder.py::test_15m_candle_aggregation PASSED         [ 18%]
+tests/test_daily_bias.py::test_daily_bias_bullish_boundary PASSED        [ 19%]
+tests/test_daily_bias.py::test_daily_bias_bearish_boundary PASSED        [ 20%]
+tests/test_daily_bias.py::test_daily_bias_inside_range_neutral PASSED    [ 21%]
+tests/test_daily_bias.py::test_daily_bias_equal_boundaries_are_neutral PASSED [ 22%]
+tests/test_daily_bias.py::test_daily_bias_missing_data_insufficient_history PASSED [ 23%]
+tests/test_daily_bias.py::test_daily_bias_rejects_non_chronological_dates PASSED [ 25%]
+tests/test_daily_bias.py::test_daily_bias_rejects_invalid_candles PASSED [ 26%]
+tests/test_daily_bias.py::test_market_session_get_previous_trading_days_handles_weekends_and_holidays PASSED [ 27%]
+tests/test_dhan_integration.py::test_dhan_binary_packet_unpacking PASSED [ 28%]
+tests/test_dhan_integration.py::test_scrip_master_parsing PASSED         [ 29%]
+tests/test_dhan_integration.py::test_dhan_auth_validation_success PASSED [ 30%]
+tests/test_dhan_integration.py::test_dhan_auth_expired_token PASSED      [ 31%]
+tests/test_dhan_integration.py::test_telegram_retry_on_rate_limit PASSED [ 32%]
+tests/test_dhan_integration.py::test_index_signal_and_live_engine_alias PASSED [ 33%]
+tests/test_historical_learner.py::test_compounding_capital_balance PASSED [ 34%]
+tests/test_historical_learner.py::test_evaluate_multi_year_bars PASSED   [ 35%]
+tests/test_historical_learner.py::test_learned_model_recency_decay_and_prediction_influence PASSED [ 36%]
+tests/test_liquidity_context.py::test_60m_slot_validation PASSED         [ 37%]
+tests/test_liquidity_context.py::test_swing_high_pivot_confirmed_at_bar_i_plus_2 PASSED [ 38%]
+tests/test_liquidity_context.py::test_high_sweep_creates_bearish_context_and_extreme PASSED [ 39%]
+tests/test_liquidity_context.py::test_low_sweep_creates_bullish_context PASSED [ 40%]
+tests/test_liquidity_context.py::test_invalidation_when_bar_closes_beyond_sweep_extreme PASSED [ 41%]
+tests/test_liquidity_context.py::test_candidate_fails_to_reclaim_in_3_bars_expires PASSED [ 42%]
+tests/test_orb_strategy.py::test_orb_high_low_calculation PASSED         [ 43%]
+tests/test_orb_strategy.py::test_no_breakout_before_1000 PASSED          [ 44%]
+tests/test_orb_strategy.py::test_long_breakout_confirmation_and_levels PASSED [ 45%]
+tests/test_orb_strategy.py::test_short_breakout_confirmation_and_levels PASSED [ 46%]
+tests/test_orb_strategy.py::test_per_symbol_trade_limit PASSED           [ 47%]
+tests/test_orb_strategy.py::test_breakout_buffer PASSED                  [ 48%]
+tests/test_orb_strategy.py::test_orb_midpoint_stop PASSED                [ 50%]
+tests/test_orb_strategy.py::test_whipsaw_double_sided_breach_filter PASSED [ 51%]
+tests/test_order_executor.py::test_telegram_approval_button_displays_whole_lot_price PASSED [ 52%]
+tests/test_order_executor.py::test_short_signal_displays_sell_lot_price PASSED [ 53%]
+tests/test_order_executor.py::test_admin_broadcast_message_dispatch PASSED [ 54%]
+tests/test_order_executor.py::test_admin_broadcast_callback_copy PASSED  [ 55%]
+tests/test_paper_tracker.py::test_target_and_stop_hit PASSED             [ 56%]
+tests/test_paper_tracker.py::test_conservative_tie_break_policy PASSED   [ 57%]
+tests/test_paper_tracker.py::test_regulatory_cost_calculation PASSED     [ 58%]
+tests/test_pivot_points.py::test_traditional_pivot_formula_exact_match PASSED [ 59%]
+tests/test_pivot_points.py::test_pivot_trap_rejection PASSED             [ 60%]
+tests/test_pivot_points.py::test_milestone_target1_and_target2_trailing_stop PASSED [ 61%]
+tests/test_secret_redaction.py::test_sensitive_data_filter_masks_secret_tokens PASSED [ 62%]
+tests/test_secret_redaction.py::test_redaction_in_telegram_error_logging PASSED [ 63%]
+tests/test_session_and_timezone.py::test_timezone_is_kolkata PASSED      [ 64%]
+tests/test_session_and_timezone.py::test_orb_period_boundaries PASSED    [ 65%]
+tests/test_session_and_timezone.py::test_entry_window_boundaries PASSED  [ 66%]
+tests/test_session_and_timezone.py::test_trading_day_weekend_logic PASSED [ 67%]
+tests/test_smc.py::test_fvg_detection_bullish_and_bearish PASSED         [ 68%]
+tests/test_smc.py::test_liquidity_sweep_detection PASSED                 [ 69%]
+tests/test_smc.py::test_hidden_liquidity_strategy PASSED                 [ 70%]
+tests/test_smc.py::test_calculate_htf_trend PASSED                       [ 71%]
+tests/test_smc.py::test_fvg_strategy_blocks_counter_htf_setup PASSED     [ 72%]
+tests/test_smc.py::test_confluence_structural_target_and_sl PASSED       [ 73%]
+tests/test_support_bot.py::test_support_bot_configuration PASSED         [ 75%]
+tests/test_support_bot.py::test_support_bot_start_command PASSED         [ 76%]
+tests/test_support_bot.py::test_support_bot_photo_submission_forwards_to_admin PASSED [ 77%]
+tests/test_support_bot.py::test_support_bot_text_query_routes_to_admin PASSED [ 78%]
+tests/test_support_bot.py::test_support_bot_admin_approval_callback PASSED [ 79%]
+tests/test_support_bot.py::test_support_bot_start_menu_single_long_plans_button PASSED [ 80%]
+tests/test_support_bot.py::test_support_bot_plans_callback_handling PASSED [ 81%]
+tests/test_support_bot.py::test_support_bot_rejection_reason_dispatch PASSED [ 82%]
+tests/test_support_bot.py::test_support_bot_admin_custom_reply_command PASSED [ 83%]
+tests/test_support_bot.py::test_support_bot_admin_reply_with_angle_brackets PASSED [ 84%]
+tests/test_support_bot.py::test_support_bot_send_message_html_fallback PASSED [ 85%]
+tests/test_templates.py::test_actionable_signal_rejects_missing_numeric_stop PASSED [ 86%]
+tests/test_templates.py::test_actionable_signal_rejects_missing_quantity_or_lots PASSED [ 87%]
+tests/test_templates.py::test_actionable_signal_renders_compliantly_with_whole_lot PASSED [ 88%]
+tests/test_templates.py::test_public_teaser_never_locks_stop_loss PASSED [ 89%]
+tests/test_templates.py::test_daily_bias_digest_matches_section_13 PASSED [ 90%]
+tests/test_trend_sweep_fvg.py::test_confirmed_pivots_known_only_at_i_plus_2 PASSED [ 91%]
+tests/test_trend_sweep_fvg.py::test_strict_inequality_excludes_ties PASSED [ 92%]
+tests/test_trend_sweep_fvg.py::test_hourly_regime_evaluation PASSED      [ 93%]
+tests/test_trend_sweep_fvg.py::test_fibonacci_retracement_math PASSED    [ 94%]
+tests/test_trend_sweep_fvg.py::test_15m_fvg_detection PASSED             [ 95%]
+tests/test_trend_sweep_fvg.py::test_statutory_costs_and_net_2r_verification PASSED [ 96%]
+tests/test_trend_sweep_fvg.py::test_rejection_when_opposing_obstacle_blocks_2r PASSED [ 97%]
+tests/test_trend_sweep_fvg.py::test_exit_policies_be_trail_moves_to_entry_at_plus_1r PASSED [ 98%]
+tests/test_trend_sweep_fvg.py::test_telegram_alert_formatter_section_10 PASSED [100%]
+
+============================== warnings summary ===============================
+tests/test_audit_validation.py::test_finalized_range_is_immutable_to_late_candles
+tests/test_audit_validation.py::test_indices_breakout_routes_through_canonical_orb_strategy
+tests/test_audit_validation.py::test_indices_breakout_routes_through_canonical_orb_strategy
+tests/test_audit_validation.py::test_indices_breakout_routes_through_canonical_orb_strategy
+tests/test_audit_validation.py::test_future_candles_cannot_change_earlier_signal
+tests/test_audit_validation.py::test_future_candles_cannot_change_earlier_signal
+tests/test_orb_strategy.py::test_orb_high_low_calculation
+tests/test_orb_strategy.py::test_no_breakout_before_1000
+  D:\micro tool\paper_lab\app\storage\database.py:582: DeprecationWarning: The default timestamp converter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    ).fetchone()
+
+tests/test_audit_validation.py::test_paper_option_execution_establishes_simulated_fill_and_ledger
+  D:\micro tool\paper_lab\app\storage\database.py:711: DeprecationWarning: The default timestamp converter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    rows = conn.execute("SELECT * FROM paper_trades WHERE status = 'OPEN'").fetchall()
+
+tests/test_historical_learner.py::test_learned_model_recency_decay_and_prediction_influence
+tests/test_historical_learner.py::test_learned_model_recency_decay_and_prediction_influence
+tests/test_orb_strategy.py::test_long_breakout_confirmation_and_levels
+tests/test_orb_strategy.py::test_short_breakout_confirmation_and_levels
+tests/test_orb_strategy.py::test_per_symbol_trade_limit
+tests/test_orb_strategy.py::test_breakout_buffer
+  D:\micro tool\paper_lab\app\storage\database.py:845: DeprecationWarning: The default timestamp converter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    row = conn.execute("SELECT * FROM stock_learned_models WHERE symbol = ?", (symbol,)).fetchone()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 96 passed, 15 warnings in 9.83s =======================

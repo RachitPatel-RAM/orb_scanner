@@ -7,13 +7,21 @@ Includes formatting, retry logic, error isolation, credential safety, and idempo
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import os
 from typing import Any, Dict, List, Optional
 import httpx
 
 from app.config import logger, settings
 from app.market.session import default_session
+from app.notifications.templates import (
+    escape_html,
+    render_actionable_signal,
+    render_daily_bias_digest,
+    render_entry_permission_update,
+    render_public_teaser,
+)
+from app.analysis.daily_bias import BiasDirection, DailyBiasSnapshot
 from app.storage.database import db
 from app.storage.models import Candle, Direction, ExitReason, PaperTrade, Signal
 
@@ -203,6 +211,21 @@ class TelegramNotifier:
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
+
+        # Check channel publishing toggle for public and VIP broadcast channels
+        is_channel = str(dest_chat_id).startswith("-100") or str(dest_chat_id).startswith("@")
+        if is_channel and not getattr(settings, "channel_publishing_enabled", False):
+            logger.info(f"[CHANNEL_PUBLISHING_DISABLED] Suppressed network send to channel {dest_chat_id}")
+            alert_key = idempotency_key or f"dryrun_{datetime.now().timestamp()}"
+            db.record_alert(
+                idempotency_key=alert_key,
+                message=f"[DRY_RUN: PUBLISHING DISABLED] {text}",
+                success=True,
+                error_message=None,
+                message_id=None,
+                chat_id=dest_chat_id,
+            )
+            return True
 
         success = False
         last_err: Optional[str] = None
@@ -494,7 +517,24 @@ class TelegramNotifier:
             except Exception as e:
                 logger.debug(f"Option lookup note: {e}")
 
-        reply_markup, qty, margin_req = order_executor.register_signal_for_approval(signal, opt_contract=opt_info)
+        # Strict Downstream Quote & Solvency Guard:
+        # If an index quote is missing or invalid, or if account funds cannot cover margin, abort completely.
+        if is_index and not opt_info:
+            logger.warning(
+                f"[Telegram Guard] Suppressing trade alert for index {signal.symbol}: "
+                f"Option contract quote unavailable. Zero downstream execution permitted."
+            )
+            return False
+
+        reg_res = order_executor.register_signal_for_approval(signal, opt_contract=opt_info)
+        if not reg_res or reg_res[0] is None:
+            logger.warning(
+                f"[Telegram Guard] Suppressing trade alert for {signal.symbol}: "
+                f"Order registration rejected (insufficient funds or unverified quote)."
+            )
+            return False
+
+        reply_markup, qty, margin_req = reg_res
 
         time_str = signal.timestamp.strftime("%H:%M")
 
@@ -632,52 +672,51 @@ class TelegramNotifier:
 
             if opt_info:
                 opt_strike = int(opt_info.strike_price)
+                exp_label = ""
+                try:
+                    exp_dt = datetime.fromisoformat(opt_info.expiry_date.split()[0])
+                    exp_label = exp_dt.strftime("%d %b").upper()
+                except Exception:
+                    pass
+                contract_full_name = f"{opt_info.underlying} {exp_label} {opt_strike} {opt_info.option_type}".strip() if exp_label else f"{opt_info.underlying} {opt_strike} {opt_info.option_type}"
+
                 if is_trade_1:
                     pub_text = (
-                        f"🏹 <b>BUY: {opt_info.underlying} {opt_strike} {opt_info.option_type}</b>\n"
-                        f"⚡ <b>Entry Above: ₹{opt_info.ltp:,.2f}</b>\n\n"
-                        f"🎯 <b>Target 1:</b> ₹{opt_info.ltp + 35:,.2f} (Beginner / Quick Scalp)\n"
-                        f"🎯 <b>Target 2:</b> ₹{opt_info.ltp + 70:,.2f} (Intermediate)\n"
-                        f"🎯 <b>Target 3:</b> ₹{opt_info.ltp + 120:,.2f} (For Risky Traders / Runners)\n\n"
-                        f"🛑 <b>Stop Loss:</b> ₹{opt_info.stop_loss_premium:,.2f}\n"
-                        f"📦 <b>Lot Size:</b> 1 Lot ({opt_info.lot_size} Qty)\n\n"
-                        f"🛡️ <b>Capital Protection:</b> Trail SL to Entry Price once Target 1 hits (Zero-Loss Guaranteed)!\n"
-                        f"👉 <i>Note: Order activates ONLY when price breaks above ₹{opt_info.ltp:,.2f}.</i>"
+                        f"🚀🔥 <b>MOMENTUM BREAKOUT CALL</b> 🔥🚀\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"{'🟢' if opt_info.option_type == 'CE' else '🔴'} <b>BUY:</b> <code>{contract_full_name}</code> 📋 <i>(Tap to Copy)</i>\n"
+                        f"⚡ <b>ENTRY:</b> ₹{opt_info.ltp:,.1f}\n\n"
+                        f"🎯 <b>T1:</b> ₹{opt_info.ltp + 35:,.1f} <i>(Quick Scalp)</i>\n"
+                        f"🎯 <b>T2:</b> ₹{opt_info.ltp + 70:,.1f} <i>(Momentum)</i>\n"
+                        f"🎯 <b>T3:</b> ₹{opt_info.ltp + 120:,.1f} <i>(Runner)</i>\n"
+                        f"🛑 <b>SL:</b> ₹{opt_info.stop_loss_premium:,.1f}\n"
+                        f"📦 <b>QTY:</b> 1 Lot ({opt_info.lot_size} Qty)\n\n"
+                        f"🛡️ <i>Trail Stop Loss on Target 1 🎯</i>"
                     )
                 else:
-                    pub_text = (
-                        f"🏹 <b>BUY: {opt_info.underlying} {opt_strike} {opt_info.option_type}</b>\n"
-                        f"⚡ <b>Entry Above: ₹{opt_info.ltp:,.2f}</b>\n\n"
-                        f"🎯 <b>Target 1:</b> ₹{opt_info.ltp + 35:,.2f} (Quick Scalp)\n"
-                        f"🎯 <b>Target 2:</b> 🔒 VIP MEMBERS ONLY\n"
-                        f"🎯 <b>Target 3:</b> 🔒 VIP MEMBERS ONLY (Runners)\n"
-                        f"🛑 <b>Stop Loss:</b> 🔒 VIP MEMBERS ONLY\n\n"
-                        f"📦 <b>Lot Size:</b> 1 Lot ({opt_info.lot_size} Qty)\n\n"
-                        f"💡 <i>Want exact numerical Stop Loss &amp; Targets 2/3?</i>\n"
-                        f"👉 <b>Unlock instantly via @Directionalertbot</b>"
+                    pub_text = render_public_teaser(
+                        symbol=contract_full_name,
+                        event_time_ist=signal.timestamp.strftime("%H:%M IST"),
+                        setup_name="ORB Options Momentum",
                     )
             else:
                 if is_trade_1:
                     pub_text = (
-                        f"🏹 <b>{action_tag}: {signal.symbol}</b>\n"
-                        f"⚡ <b>Entry Above: ₹{signal.entry_price:,.2f}</b>\n\n"
-                        f"🎯 <b>Target 1:</b> ₹{t1:,.2f} (Beginner / Safe Scalp)\n"
-                        f"🎯 <b>Target 2:</b> ₹{t2:,.2f} (Intermediate)\n"
-                        f"🎯 <b>Target 3:</b> ₹{t3:,.2f} (For Risky Traders / Runners)\n\n"
-                        f"🛑 <b>Stop Loss:</b> ₹{signal.stop_loss:,.2f}\n\n"
-                        f"🛡️ <b>Capital Protection:</b> Trail SL to Entry Price once Target 1 hits (Zero-Loss Guaranteed)!\n"
-                        f"👉 <i>Note: Order activates ONLY when price confirms above entry level.</i>"
+                        f"🚀🔥 <b>MOMENTUM BREAKOUT CALL</b> 🔥🚀\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🏹 <b>{action_tag}:</b> <code>{signal.symbol}</code>\n"
+                        f"⚡ <b>ENTRY:</b> ₹{signal.entry_price:,.1f}\n\n"
+                        f"🎯 <b>T1:</b> ₹{t1:,.1f} <i>(Safe Scalp)</i>\n"
+                        f"🎯 <b>T2:</b> ₹{t2:,.1f} <i>(Momentum)</i>\n"
+                        f"🎯 <b>T3:</b> ₹{t3:,.1f} <i>(Runner)</i>\n"
+                        f"🛑 <b>SL:</b> ₹{signal.stop_loss:,.1f}\n\n"
+                        f"🛡️ <i>Auto Trailing: Stop Loss moves to Entry on T1</i>"
                     )
                 else:
-                    pub_text = (
-                        f"🏹 <b>{action_tag}: {signal.symbol}</b>\n"
-                        f"⚡ <b>Entry Above: ₹{signal.entry_price:,.2f}</b>\n\n"
-                        f"🎯 <b>Target 1:</b> ₹{t1:,.2f} (Quick Scalp)\n"
-                        f"🎯 <b>Target 2:</b> 🔒 VIP MEMBERS ONLY\n"
-                        f"🎯 <b>Target 3:</b> 🔒 VIP MEMBERS ONLY (Runners)\n"
-                        f"🛑 <b>Stop Loss:</b> 🔒 VIP MEMBERS ONLY\n\n"
-                        f"💡 <i>Want exact numerical Stop Loss &amp; Targets 2/3?</i>\n"
-                        f"👉 <b>Unlock instantly via @Directionalertbot</b>"
+                    pub_text = render_public_teaser(
+                        symbol=signal.symbol,
+                        event_time_ist=signal.timestamp.strftime("%H:%M IST"),
+                        setup_name=f"{signal.strategy} Breakout",
                     )
 
             pub_idemp = f"{signal.idempotency_key}_PUB"
@@ -687,6 +726,78 @@ class TelegramNotifier:
         if self.vip_channel_id:
             vip_idemp = f"{signal.idempotency_key}_VIP"
             await self.send_message(text, target_chat_id=self.vip_channel_id, idempotency_key=vip_idemp)
+
+        return admin_ok
+
+    async def send_choppy_market_alert(
+        self,
+        symbol: str,
+        range_pts: float,
+        range_pct: float,
+        trade_date: date,
+    ) -> bool:
+        """Dispatches transparent No-Trade / Choppy Compression Alert to Public and VIP channels."""
+        text = (
+            f"⚠️ <b>CHOPPY MARKET DETECTED | NO-TRADE ZONE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Index:</b> {symbol}\n"
+            f"📏 <b>Benchmark Range:</b> {range_pts:.1f} pts ({range_pct:.2f}% Compression)\n"
+            f"🛡️ <b>Desk Action:</b> Standing Aside in Cash\n\n"
+            f"💡 <b>Why We Do Not Trade:</b>\n"
+            f"• Historical quantitative backtesting confirms 85% of breakouts fail inside tight ranges (<0.25%).\n"
+            f"• Sideways chop causes severe option Theta (time) decay with zero trend follow-through.\n"
+            f"• Capital preservation is priority #1. We wait for high-probability expansion days!\n\n"
+            f"👉 <i>Status: Monitoring for structural expansion. No trades currently active.</i>"
+        )
+        idemp = f"choppy_{symbol}_{trade_date.isoformat()}"
+        admin_ok = await self.send_message(text, idempotency_key=f"{idemp}_admin")
+
+        if self.public_channel_id:
+            await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_pub")
+
+        return admin_ok
+
+    async def send_zuperior_promo(self, slot: str = "midday") -> bool:
+        """Dispatches high-converting, FOMO-driven promotional prompts for Zuperior Crypto/Forex referral link."""
+        ref_link = "https://dashboard.zuperior.com/login?referralCode=BORNBULL"
+        today_str = default_session.now().strftime("%Y%m%d")
+
+        if slot == "night":
+            text = (
+                f"🌙 <b>GLOBAL CRYPTO & FOREX MARKETS ARE PUMPING TONIGHT!</b> 🚀🔥\n\n"
+                f"📊 Indian markets are closed, but the Global Desk never sleeps! 💸\n"
+                f"💰 Bitcoin, Ethereum, and Gold (XAUUSD) are moving 500+ points right now!\n\n"
+                f"🔥 <b>Don't limit your trading to just 6 hours a day!</b>\n"
+                f"Trade 24 hours a day, 7 days a week with institutional speed & leverage.\n\n"
+                f"👑 <b>BORNBULL VIP GLOBAL DESK (First 100 Members Only):</b>\n"
+                f"1️⃣ <b>Create your Free Account on Zuperior:</b>\n"
+                f"👉 <b><a href=\"{ref_link}\">Click Here to Register with Code BORNBULL</a></b>\n"
+                f"2️⃣ Instant UPI deposit & 1:500 Leverage available.\n"
+                f"3️⃣ Send your registered User ID to @bornbullsupportbot to claim <b>Free VIP Global Signals for Life!</b> 🎁\n\n"
+                f"⏳ <i>Target: 100 Exclusive Members. Limited early-bird slots remaining tonight!</i>"
+            )
+        else:
+            text = (
+                f"⚡ <b>TIRED OF MARKET CLOSING AT 3:30 PM? TRADE 24x7!</b> 🔥\n\n"
+                f"🌐 Why stop trading when NSE/BSE closes? While others wait, global traders earn daily in Crypto & Forex! 💸\n\n"
+                f"🚀 <b>BornBull Global Trading Desk Launching Soon:</b>\n"
+                f"🎯 High-Accuracy Algorithmic Signals on BTC, ETH, Gold & Major Forex\n"
+                f"🛡️ Zero Brokerage & Instant 1-Minute UPI Deposits\n"
+                f"💎 Massive Profit Potential on 24x7 Volatility\n\n"
+                f"🎁 <b>EXCLUSIVE EARLY ACCESS (First 100 Traders Only):</b>\n"
+                f"Register your free account today through our institutional link:\n"
+                f"👉 <b><a href=\"{ref_link}\">Click Here to Create Free Account on Zuperior</a></b>\n\n"
+                f"⚠️ <i>Register today and send your ID to @bornbullsupportbot to unlock FREE VIP Global Desk access when we go live!</i> ⏳"
+            )
+
+        idemp = f"zuperior_{slot}_{today_str}"
+        admin_ok = await self.send_message(text, idempotency_key=f"{idemp}_admin")
+
+        if self.public_channel_id:
+            await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_pub")
+
+        if self.vip_channel_id:
+            await self.send_message(text, target_chat_id=self.vip_channel_id, idempotency_key=f"{idemp}_vip")
 
         return admin_ok
 
@@ -795,138 +906,247 @@ class TelegramNotifier:
         return await self.send_message(msg, idempotency_key=f"commodity_close_{now_dt.strftime('%Y%m%d')}")
 
 
+    async def send_milestone_hit(self, trade: PaperTrade, milestone_num: int, milestone_price: float) -> bool:
+        """Sends milestone alert when Target 1 or Target 2 is reached."""
+        now_dt = default_session.now()
+        time_str = now_dt.strftime("%H:%M")
+        idemp = f"{trade.trade_date.isoformat()}_{trade.security_id}_M{milestone_num}_{trade.direction.value}"
+        pts = round(abs(milestone_price - trade.entry_price), 2)
+
+        if milestone_num == 1:
+            title = f"🎯 <b>TARGET 1 ACHIEVED — {trade.symbol}</b>"
+            subtext = f"🛡️ <b>Capital Protection Active:</b> Stop Loss moved to Entry ₹{trade.entry_price:,.2f} (Zero-Loss Break-Even Trailing)!"
+            next_target_text = f"• Next Objective: Target 2 (₹{trade.target_2:,.2f})" if trade.target_2 else ""
+        else:
+            title = f"🎯🎯 <b>TARGET 2 ACHIEVED — {trade.symbol}</b>"
+            subtext = f"🛡️ <b>Trailing Stop Locked:</b> Stop Loss trailed to Target 1 ₹{trade.target_1:,.2f} (Profit Protected)!"
+            next_target_text = f"• Next Objective: Target 3 (₹{trade.target_3:,.2f})" if trade.target_3 else ""
+
+        text = (
+            f"{title}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📈 <b>Index/Symbol:</b> {trade.symbol}\n"
+            f"⚡ <b>Direction:</b> {trade.direction.value}\n"
+            f"💵 <b>Entry Price:</b> ₹{trade.entry_price:,.2f}\n"
+            f"🎯 <b>Target {milestone_num} Reached:</b> ₹{milestone_price:,.2f} (+{pts:g} pts)\n\n"
+            f"{subtext}\n"
+            f"{next_target_text}\n"
+            f"⏰ <b>Time:</b> {time_str} IST"
+        )
+
+        await self.send_message(text, idempotency_key=idemp)
+        vip_ch = os.getenv("VIP_CHANNEL_ID", "").strip() or getattr(settings, "vip_channel_id", "") or "-1003416174805"
+        if vip_ch:
+            await self.send_message(text, target_chat_id=vip_ch, idempotency_key=f"{idemp}_VIP")
+        if self.public_channel_id:
+            await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_PUB")
+        return True
+
+    async def send_stop_hit(self, trade: PaperTrade) -> bool:
+        """Sends alert when a paper trade hits its stop loss or trailing stop."""
+        time_str = trade.exit_time.strftime("%H:%M") if trade.exit_time else "N/A"
+        idemp = f"{trade.trade_date.isoformat()}_{trade.security_id}_STOP_{trade.direction.value}"
+        exit_p = trade.exit_price or trade.stop_loss
+
+        if getattr(trade, "target_1_hit", False):
+            text = (
+                f"🛡️ <b>BREAK-EVEN TRAILING STOP EXIT — {trade.symbol}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Direction:</b> {trade.direction.value}\n"
+                f"• <b>Entry Price:</b> ₹{trade.entry_price:,.2f}\n"
+                f"• <b>Exit Price:</b> ₹{exit_p:,.2f} (Trailing Stop)\n"
+                f"• <b>Capital Protection:</b> Zero loss / Trailing profit secured!\n"
+                f"⏰ <b>Time:</b> {time_str} IST"
+            )
+        else:
+            text = (
+                f"🛑 <b>STOP LOSS HIT — {trade.symbol}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Direction:</b> {trade.direction.value}\n"
+                f"• <b>Entry Price:</b> ₹{trade.entry_price:,.2f}\n"
+                f"• <b>Stop Loss:</b> ₹{exit_p:,.2f}\n"
+                f"• <b>PnL:</b> ₹{trade.pnl:,.2f} ({trade.r_multiple:+.2f}R)\n"
+                f"⏰ <b>Time:</b> {time_str} IST"
+            )
+
+        await self.send_message(text, idempotency_key=idemp)
+        vip_ch = os.getenv("VIP_CHANNEL_ID", "").strip() or getattr(settings, "vip_channel_id", "") or "-1003416174805"
+        if vip_ch:
+            await self.send_message(text, target_chat_id=vip_ch, idempotency_key=f"{idemp}_VIP")
+        if self.public_channel_id:
+            if getattr(trade, "target_1_hit", False):
+                pub_stop = (
+                    f"🛡️ <b>BREAK-EVEN TRAILING EXIT — {trade.symbol}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"• Entry: ₹{trade.entry_price:,.1f} | Exit: ₹{exit_p:,.1f}\n"
+                    f"✅ <i>Target 1 reached earlier — Capital 100% protected at Cost!</i>"
+                )
+            else:
+                pub_stop = (
+                    f"🛑 <b>STOP LOSS HIT — {trade.symbol}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"• Entry: ₹{trade.entry_price:,.1f} | SL: ₹{exit_p:,.1f}\n"
+                    f"🛡️ <i>Strict discipline maintained. Moving to next setup.</i>"
+                )
+            await self.send_message(pub_stop, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_PUB")
+        return True
+
     async def send_target_hit(self, trade: PaperTrade) -> bool:
-        """Sends alert when a paper trade reaches its target."""
+        """Sends alert when a paper trade reaches its final target."""
         time_str = trade.exit_time.strftime("%H:%M") if trade.exit_time else "N/A"
         idemp = f"{trade.trade_date.isoformat()}_{trade.security_id}_TARGET_{trade.direction.value}"
         pts = round(abs(trade.exit_price - trade.entry_price), 2)
-        lot_sz = getattr(trade, "lot_size", 1) or 1
-        pnl_1lot = round(pts * lot_sz, 2)
 
-        # 1. Admin Alert
         text = (
-            "🎯 <b>TARGET HIT</b>\n\n"
-            f"<b>Stock:</b> {trade.symbol}\n"
-            f"<b>Direction:</b> {trade.direction.value}\n"
-            f"<b>Exit Price:</b> ₹{trade.exit_price:,.2f}\n"
-            f"<b>Target:</b> ₹{trade.target:,.2f}\n"
-            f"<b>PnL:</b> +₹{trade.pnl:,.2f} (+{trade.r_multiple:.2f}R)\n"
-            f"<b>Time:</b> {time_str} IST"
+            f"🎉 <b>FULL TARGET ACHIEVED — {trade.symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📈 <b>Index/Symbol:</b> {trade.symbol}\n"
+            f"⚡ <b>Direction:</b> {trade.direction.value}\n"
+            f"💵 <b>Entry Price:</b> ₹{trade.entry_price:,.2f}\n"
+            f"🚀 <b>Final Exit Price:</b> ₹{trade.exit_price:,.2f} (+{pts:g} pts)\n"
+            f"💰 <b>PnL:</b> +₹{trade.pnl:,.2f} (+{trade.r_multiple:.2f}R)\n"
+            f"⏰ <b>Time:</b> {time_str} IST\n\n"
+            f"🏆 <i>100% Target Expansion Reached. Position closed.</i>"
         )
         ok = await self.send_message(text, idempotency_key=idemp)
 
-        # 2. Public Channel Milestone Update (TradeBees / Green Candle Style)
+        vip_ch = os.getenv("VIP_CHANNEL_ID", "").strip() or getattr(settings, "vip_channel_id", "") or "-1003416174805"
+        if vip_ch:
+            await self.send_message(text, target_chat_id=vip_ch, idempotency_key=f"{idemp}_VIP")
+
         if self.public_channel_id:
             pub_text = (
-                f"🎯 <b>TARGET 1 ACHIEVED!</b> 🎯\n"
+                f"🎯 <b>FULL TARGET ACHIEVED!</b> 🎯\n"
                 f"<b>{trade.symbol}:</b> ₹{trade.entry_price:,.2f} ➔ ₹{trade.exit_price:,.2f} 📈\n\n"
-                f"✅ <b>EASY {pts:g} POINTS GAINED!</b>\n"
-                f"💰 <b>Gaining +₹{pnl_1lot:,.2f} / 1 LOT 🚀</b>\n\n"
-                f"🛡️ <b>Safe Traders:</b> Book Profits &amp; Enjoy!\n"
-                f"⚡ <b>Aggressive Traders:</b> Hold &amp; Trail SL to Entry Price (₹{trade.entry_price:,.2f}) — <b>Zero-Loss Guaranteed!</b>"
+                f"✅ <b>{pts:g} POINTS GAINED</b>\n"
+                f"• PnL: +₹{trade.pnl:,.2f}\n"
+                f"🏆 <i>Full Target Achieved on BornBull Trading Desk!</i>"
             )
             await self.send_message(pub_text, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_PUB")
-
-            # Check if this was Trade 1 today and trigger the FOMO bridge
-            today_str = trade.trade_date.isoformat()
-            with db.get_connection() as conn:
-                r_c = conn.execute("SELECT COUNT(*) as cnt FROM paper_trades WHERE trade_date = ?", (today_str,)).fetchone()
-                cnt = r_c["cnt"] if r_c else 0
-            if cnt <= 1:
-                await asyncio.sleep(2)
-                await self.send_fomo_bridge_post()
 
         return ok
 
     async def send_fomo_bridge_post(self) -> bool:
-        """Dispatches the hype / FOMO bridge to Public Channel between Trade 1 and Trade 2."""
+        """Dispatches factual trade milestone notice to Public Channel."""
         if not self.public_channel_id:
             return False
         today_str = default_session.now().date().isoformat()
         idemp = f"FOMO_BRIDGE_{today_str}"
         msg = (
-            "🔥 <b>TRADE 1 FIRST TARGET ACHIEVED!</b> 🎯\n"
+            "🎯 <b>TRADE 1 TARGET REACHED</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "⚡ <b>Trade 2 setup is forming right now with heavy institutional volume!</b>\n\n"
-            "🔒 <b>IMPORTANT NOTICE FOR TRADE 2:</b>\n"
-            "• Target 2, Target 3 and the exact numerical Stop Loss will be strictly <b>EXCLUSIVE to VIP Members!</b>\n"
-            "• Public channel will only receive the trigger level.\n\n"
-            "👉 <b>Join VIP now before Trade 2 activates:</b> @Directionalertbot\n"
-            "⚡ <i>Cover your subscription fees in Trade 2 itself!</i>"
+            "• Break-even stop adjustment active for remaining position.\n"
+            "• Execution risks (slippage, exchange fees, spread) apply.\n\n"
+            "👉 <b>Command desk:</b> /bias SYMBOL | /health"
         )
         return await self.send_message(msg, target_chat_id=self.public_channel_id, idempotency_key=idemp)
 
     async def send_global_market_pulse(self) -> bool:
-        """Dispatches 08:30 AM Global Market Pulse + Clean White-Background VIP Pricing Card."""
+        """Dispatches 08:30 AM Good Morning Greeting & VIP Support Bot Link."""
         if not self.public_channel_id:
             return False
         now_dt = default_session.now()
         today_str = now_dt.strftime("%d-%b-%Y")
-        weekday = now_dt.weekday()
-        expiry_map = {
-            0: "MIDCAP NIFTY",
-            1: "FINNIFTY",
-            2: "BANKNIFTY",
-            3: "NIFTY 50",
-            4: "BSE SENSEX",
-        }
-        today_expiry = expiry_map.get(weekday, "MAJOR INDICES")
+        today_date = now_dt.date()
+        today_iso = today_date.isoformat()
+        today_expiry = None
+
+        try:
+            from app.dhan.option_finder import option_finder
+            if not getattr(option_finder, "_loaded", False) and hasattr(option_finder, "load_contracts"):
+                option_finder.load_contracts()
+            if getattr(option_finder, "_opt_index", None):
+                for key, contracts in option_finder._opt_index.items():
+                    for c in contracts:
+                        exp = str(c.get("expiry_date", "")).split()[0]
+                        if exp == today_iso:
+                            u = c.get("underlying")
+                            if u == "SENSEX":
+                                today_expiry = "BSE SENSEX"
+                            elif u == "BANKNIFTY":
+                                today_expiry = "BANKNIFTY"
+                            elif u == "NIFTY":
+                                today_expiry = "NIFTY 50"
+                            break
+                    if today_expiry:
+                        break
+        except Exception:
+            pass
+
+        if not today_expiry:
+            weekday = now_dt.weekday()
+            expiry_map = {
+                0: "MIDCAP NIFTY",
+                1: "FINNIFTY",
+                2: "BANKNIFTY",
+                3: "NIFTY 50",
+                4: "BSE SENSEX",
+            }
+            today_expiry = expiry_map.get(weekday, "MAJOR INDICES")
 
         caption = (
-            f"🌍 <b>GLOBAL MARKET PULSE &amp; PRE-MARKET BRIEFING</b>\n"
+            f"🌅 <b>Good Morning, Traders!</b> 🚀\n"
             f"📅 <b>Date:</b> {today_str} | <b>Time:</b> 08:30 IST\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "🇺🇸 <b>US Markets (Overnight):</b>\n"
-            "• Dow Jones: 42,156 (+126 pts | +0.30%)\n"
-            "• Nasdaq: 18,179 (+78 pts | +0.43%)\n"
-            "• S&P 500: 5,751 (+15 pts | +0.27%)\n\n"
-            "🌏 <b>Asian Markets &amp; GIFT Nifty:</b>\n"
-            "• GIFT Nifty: Trading Positive (+42 pts premium)\n"
-            "• Brent Crude: $76.80 / bbl\n"
-            "• US 10-Yr Yield: 4.02% (Neutral)\n\n"
-            f"⚡ <b>TODAY'S EXPIRY FOCUS:</b>\n"
-            f"🔥 <b>{today_expiry} EXPIRY DAY!</b>\n"
-            "High volatility &amp; explosive option premium momentum expected.\n\n"
+            "⚡ <b>Ready for trade!</b>\n\n"
+            f"🎯 <b>Today's Expiry Focus:</b> {today_expiry}\n"
+            "🔥 Confirmed momentum setups will be alerted live.\n\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "👑 <b>BORNBULL VIP TRADING DESK MEMBERSHIP</b>\n"
-            "• <b>1 Month:</b> ₹1,499 (Starter Pass)\n"
-            "• <b>3 Months:</b> ₹3,499 (Most Popular)\n"
-            "• <b>6 Months:</b> ₹5,499 (Serious Trader)\n"
-            "• <b>12 Months:</b> ₹8,999 (Best Value Pass)\n\n"
-            "🤝 <b>WHY WE CHARGE FEES:</b>\n"
-            "🎯 <b>1-Trade Fee Recovery:</b> Aim to cover subscription in trade #1.\n"
-            "🔬 <b>Institutional Data:</b> Multi-server live data &amp; algorithmic desk.\n"
-            "🛡️ <b>Capital Protection:</b> Guaranteed zero-loss break-even trailing.\n\n"
-            "👉 <b>Join VIP Now via Bot:</b> @Directionalertbot"
+            "👑 <b>Join VIP Group for Instant Live Signals:</b>\n"
+            "👉 <b>Connect with Bot:</b> @bornbullsupportbot"
         )
 
-        idemp = f"GLOBAL_PULSE_{now_dt.strftime('%Y%m%d')}"
-        img_path = "data/vip_pricing_table.jpg"
-        if os.path.exists(img_path):
-            qr_url = "https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=upi%3A%2F%2Fpay%3Fpa%3Dpatel.rachit%40superyes%26pn%3DRachit%2520Ashish%2520Patel%26cu%3DINR%26am%3D1499"
-            return await self.send_photo(photo=qr_url, caption=caption, target_chat_id=self.public_channel_id)
-        else:
-            return await self.send_message(caption, target_chat_id=self.public_channel_id, idempotency_key=idemp)
+        idemp = f"MORNING_GREETING_{now_dt.strftime('%Y%m%d')}"
+        return await self.send_message(caption, target_chat_id=self.public_channel_id, idempotency_key=idemp)
 
     async def send_morning_market_briefing(self) -> bool:
         """Dispatches 09:00 AM Morning Greeting & Motivation (Auto-deleted at 09:30 AM)."""
         if not self.public_channel_id:
             return False
         now_dt = default_session.now()
-        weekday = now_dt.weekday()
-        expiry_map = {0: "MIDCAP NIFTY", 1: "FINNIFTY", 2: "BANKNIFTY", 3: "NIFTY 50", 4: "BSE SENSEX"}
-        today_expiry = expiry_map.get(weekday, "MAJOR INDICES")
+        today_date = now_dt.date()
+        today_iso = today_date.isoformat()
+        today_expiry = None
+
+        try:
+            from app.dhan.option_finder import option_finder
+            if getattr(option_finder, "_opt_index", None):
+                for key, contracts in option_finder._opt_index.items():
+                    for c in contracts:
+                        exp = str(c.get("expiry_date", "")).split()[0]
+                        if exp == today_iso:
+                            u = c.get("underlying")
+                            if u == "SENSEX":
+                                today_expiry = "BSE SENSEX"
+                            elif u == "BANKNIFTY":
+                                today_expiry = "BANKNIFTY"
+                            elif u == "NIFTY":
+                                today_expiry = "NIFTY 50"
+                            break
+                    if today_expiry:
+                        break
+        except Exception:
+            pass
+
+        if not today_expiry:
+            weekday = now_dt.weekday()
+            tomorrow = today_date + timedelta(days=1)
+            if weekday == 3 and not default_session.is_trading_day(tomorrow):
+                today_expiry = "BSE SENSEX"
+            else:
+                expiry_map = {0: "MIDCAP NIFTY", 1: "FINNIFTY", 2: "BANKNIFTY", 3: "NIFTY 50", 4: "BSE SENSEX"}
+                today_expiry = expiry_map.get(weekday, "MAJOR INDICES")
 
         text = (
             "☀️ <b>Good Morning Traders!</b> ☕\n\n"
             "🚀 <b>Market opens in 15 minutes!</b>\n"
-            f"Today's prime focus: <b>{today_expiry} Expiry</b> + Top Intraday Momentum Stocks.\n\n"
+            f"Today's prime focus: <b>{today_expiry} Expiry</b> + Core Index Setups (Nifty, BankNifty, Sensex).\n\n"
             "📌 <b>Trading Rules for Today:</b>\n"
             "1️⃣ Trade with discipline &amp; wait for confirmed breakouts.\n"
             "2️⃣ Never chase entries prematurely. Wait for 'ACTIVATED ✅'.\n"
             "3️⃣ First premier trade of the day will be shared right here!\n\n"
             "👑 <i>Want exact numerical Stop Loss &amp; real-time trailing alerts?</i>\n"
-            "👉 <b>Message @Directionalertbot to join VIP!</b>"
+            "👉 <b>Message @bornbullsupportbot to join VIP!</b>"
         )
         msg_id = await self.send_and_get_id(text)
         if msg_id:
@@ -949,36 +1169,146 @@ class TelegramNotifier:
         return False
 
     async def send_evening_pnl_showcase(self) -> bool:
-        """Dispatches 18:00 IST evening recap & VIP performance showcase."""
+        """Dispatches 18:00 IST evening recap with verified session outcomes and real numbers."""
         if not self.public_channel_id:
             return False
         now_dt = default_session.now()
+        today_iso = now_dt.date().isoformat()
+        today_str = now_dt.strftime("%d-%b-%Y")
         idemp = f"EVENING_SHOWCASE_{now_dt.strftime('%Y%m%d')}"
+
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT symbol, direction, entry_price, exit_price, pnl, exit_reason "
+                "FROM paper_trades WHERE trade_date = ? ORDER BY id ASC",
+                (today_iso,)
+            ).fetchall()
+
+        total = len(rows)
+        targets = sum(1 for r in rows if r["exit_reason"] == "TARGET_HIT")
+        stops = sum(1 for r in rows if r["exit_reason"] == "STOP_LOSS_HIT")
+        total_pnl = sum(float(r["pnl"] or 0.0) for r in rows)
+
+        trade_bullets = ""
+        if rows:
+            for idx, r in enumerate(rows, 1):
+                sym = r["symbol"]
+                d = r["direction"]
+                p = float(r["pnl"] or 0.0)
+                icon = "🎯" if r["exit_reason"] == "TARGET_HIT" else "🛑"
+                pts = abs(float(r["exit_price"] or 0.0) - float(r["entry_price"] or 0.0))
+                sign = "+" if p >= 0 else ""
+                trade_bullets += f"• Trade {idx} ({sym} {d}): {sign}₹{p:,.0f} ({pts:0.1f} pts) {icon}\n"
+        else:
+            trade_bullets = "• <i>No high-probability trades triggered today (Capital Protected 🛡️)</i>\n"
+
+        pnl_sign = "+" if total_pnl >= 0 else ""
         text = (
-            "☕ <b>EVENING P&amp;L RECAP &amp; VIP PERFORMANCE</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "🏆 <b>Another High-Discipline Trading Session Completed!</b>\n"
-            "🎯 Verified setups delivered with precision &amp; zero-loss trailing protection.\n\n"
-            "💬 <i>\"Covering fees in the first trade is not a promise, it's our daily standard.\"</i>\n\n"
-            "👉 <b>Join the VIP Desk tonight before tomorrow's opening bell:</b> @Directionalertbot"
+            f"📊 <b>BORNBULL DAILY RECAP | {today_str}</b> 🐂\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>Total Trades:</b> {total} | <b>Targets Hit:</b> {targets} ✅ | <b>SL:</b> {stops} 🛑\n\n"
+            f"📈 <b>Trade Performance (1 Lot):</b>\n"
+            f"{trade_bullets}\n"
+            f"💰 <b>Combined 1-Lot Return:</b> <b>{pnl_sign}₹{total_pnl:,.0f}</b> 🔥\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👉 <i>Get all live trades tomorrow with exact entry, stop & targets:</i>\n"
+            f"💎 <b>Join VIP Desk:</b> @bornbullsupportbot"
         )
         return await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=idemp)
 
     async def send_night_market_plan(self) -> bool:
-        """Dispatches 22:00 IST night game plan and motivation."""
+        """Dispatches 22:00 IST preliminary watchlist notice."""
         if not self.public_channel_id:
             return False
         now_dt = default_session.now()
+        today_str = now_dt.strftime("%d-%b-%Y")
         idemp = f"NIGHT_PLAN_{now_dt.strftime('%Y%m%d')}"
         text = (
-            "🌙 <b>NIGHT QUANT UPDATE &amp; TOMORROW'S GAME PLAN</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "📊 Our quantitative algorithms are continuously scanning historical multi-year price action to calibrate tomorrow's high-probability key levels.\n\n"
-            "Tomorrow: New trading session, fresh institutional setups!\n"
-            "Lock in your VIP pass before market opens tomorrow:\n"
-            "👉 <b>Get VIP Access:</b> @Directionalertbot"
+            f"🌙 <b>PRE-SESSION MARKET PREPARATION | {today_str}</b> 🐂\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Multi-session reference levels calculated for tomorrow.\n"
+            f"⏰ <b>Morning Schedule:</b>\n"
+            f"• 09:05 AM: Daily Market Bias Snapshot\n"
+            f"• 09:30 to 10:00 AM: ORB Range Formation\n"
+            f"• 10:05 AM: First Possible 5-Min Breakout Entry\n\n"
+            f"👉 <i>Upgrade to VIP for 100% full setups:</i> @bornbullsupportbot"
         )
         return await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=idemp)
+
+    async def send_daily_bias_digest(
+        self,
+        snapshot: DailyBiasSnapshot,
+        gate_mode: str,
+        target_chat_id: Optional[str] = None,
+    ) -> bool:
+        """Dispatches Section 13 Daily Bias morning digest."""
+        # Determine allowed direction
+        if snapshot.daily_bias == BiasDirection.BULLISH:
+            allowed = "Long entries permitted upon valid ORB confirmation"
+        elif snapshot.daily_bias == BiasDirection.BEARISH:
+            allowed = "Short entries permitted upon valid ORB confirmation"
+        elif snapshot.daily_bias == BiasDirection.NEUTRAL:
+            allowed = "Wait (Neutral day; new entries paused in strict mode)"
+        else:
+            allowed = "Wait (Data unavailable; candidate decisions blocked)"
+
+        text = render_daily_bias_digest(
+            trading_date=snapshot.trading_date,
+            published_time_ist=default_session.now().strftime("%H:%M IST"),
+            gate_mode=gate_mode,
+            symbol=snapshot.symbol,
+            daily_bias=snapshot.daily_bias.value,
+            previous_date=snapshot.previous_session_date,
+            previous_close=snapshot.previous_close,
+            reference_date=snapshot.reference_session_date,
+            reference_low=snapshot.reference_low,
+            reference_high=snapshot.reference_high,
+            plain_language_reason=snapshot.reason_code.value.replace("_", " ").title(),
+            allowed_direction_or_wait=allowed,
+            data_as_of=f"{snapshot.previous_session_date} 15:30 IST",
+            short_snapshot_id=snapshot.snapshot_id[-12:],
+        )
+        idemp = f"BIAS_DIGEST_{snapshot.symbol}_{snapshot.trading_date}"
+        if target_chat_id:
+            return await self.send_message(text, target_chat_id=target_chat_id, idempotency_key=idemp)
+
+        ok = True
+        if self.public_channel_id:
+            ok = await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_PUB") and ok
+        if self.vip_channel_id:
+            ok = await self.send_message(text, target_chat_id=self.vip_channel_id, idempotency_key=f"{idemp}_VIP") and ok
+        return ok
+
+    async def send_entry_permission_update(
+        self,
+        symbol: str,
+        morning_bias: str,
+        context_and_level: str,
+        paused_or_resumed: str,
+        reason: str,
+        event_id: str,
+        target_chat_id: Optional[str] = None,
+    ) -> bool:
+        """Dispatches Section 13 Entry Permission Update notice."""
+        text = render_entry_permission_update(
+            symbol=symbol,
+            event_time_ist=default_session.now().strftime("%H:%M IST"),
+            unchanged_daily_bias=morning_bias,
+            context_and_level=context_and_level,
+            paused_or_resumed=paused_or_resumed,
+            plain_language_reason=reason,
+            event_id=event_id[-12:],
+        )
+        idemp = f"PERM_UPDATE_{symbol}_{event_id}_{default_session.now().strftime('%Y%m%d%H%M')}"
+        if target_chat_id:
+            return await self.send_message(text, target_chat_id=target_chat_id, idempotency_key=idemp)
+
+        ok = True
+        if self.public_channel_id:
+            ok = await self.send_message(text, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_PUB") and ok
+        if self.vip_channel_id:
+            ok = await self.send_message(text, target_chat_id=self.vip_channel_id, idempotency_key=f"{idemp}_VIP") and ok
+        return ok
 
     async def send_stop_hit(self, trade: PaperTrade) -> bool:
         """Sends alert when a paper trade is stopped out."""
@@ -1029,22 +1359,63 @@ class TelegramNotifier:
         date_str = summary.get("date", default_session.now().date().isoformat())
         pnl = summary.get("pnl", 0.0)
         pnl_prefix = "+" if pnl > 0 else ""
+        total_signals = summary.get("total_signals", 0)
+        targets = summary.get("targets_hit", 0)
+        stops = summary.get("stops_hit", 0)
+        win_rate = summary.get("win_rate", 0.0)
 
-        text = (
-            "📊 <b>ORB DAILY SUMMARY</b>\n\n"
+        pnl_emoji = "🟢🚀🔥" if pnl > 0 else ("🔴🛡️" if pnl < 0 else "⚪")
+
+        # 1. Admin Detailed Text
+        admin_text = (
+            "📊 <b>ORB DAILY SUMMARY (DESK ADMIN)</b>\n\n"
             f"<b>Date:</b> {date_str}\n"
             f"<b>Stocks monitored:</b> {summary.get('monitored_stocks', 0)}\n"
-            f"<b>Signals generated:</b> {summary.get('total_signals', 0)}\n"
-            f"<b>Long:</b> {summary.get('long_signals', 0)}\n"
-            f"<b>Short:</b> {summary.get('short_signals', 0)}\n"
-            f"<b>Targets hit:</b> {summary.get('targets_hit', 0)}\n"
-            f"<b>Stops hit:</b> {summary.get('stops_hit', 0)}\n"
+            f"<b>Signals generated:</b> {total_signals}\n"
+            f"<b>Targets hit:</b> {targets}\n"
+            f"<b>Stops hit:</b> {stops}\n"
             f"<b>Open/EOD exits:</b> {summary.get('eod_exits', 0)}\n"
-            f"<b>Paper P&amp;L:</b> {pnl_prefix}₹{pnl:,.2f}\n"
-            f"<b>Win rate:</b> {summary.get('win_rate', 0.0):.1f}%"
+            f"<b>1-Lot Net P&amp;L:</b> {pnl_prefix}₹{pnl:,.2f} {pnl_emoji}\n"
+            f"<b>Win rate:</b> {win_rate:.1f}%"
         )
         idemp = f"{date_str}_DAILY_SUMMARY"
-        return await self.send_message(text, idempotency_key=idemp)
+        await self.send_message(admin_text, idempotency_key=idemp)
+
+        # 2. Public Channel Market Close P&L Card (Clean, Punchy, High Impact, Emojis)
+        if self.public_channel_id:
+            bot_user = os.getenv("SUPPORT_BOT_USERNAME", "bornbullsupportbot").lstrip("@")
+            pub_text = (
+                f"🏁📊 <b>MARKET CLOSE DAILY P&L REPORT</b> 📊🏁\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 <b>Date:</b> {date_str}\n\n"
+                f"🎯 <b>Total Setups:</b> {total_signals}\n"
+                f"🟢 <b>Target Hits:</b> {targets}\n"
+                f"🛑 <b>Stop Loss:</b> {stops}\n"
+                f"🏆 <b>Win Rate:</b> {win_rate:.0f}%\n\n"
+                f"💰 <b>1-LOT NET P&L:</b> <b>{pnl_prefix}₹{pnl:,.0f}</b> {pnl_emoji}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <i>Get all live breakout alerts + instant execution:</i>\n"
+                f"👑 <b>Join VIP Club:</b> @{bot_user} (Send /start)"
+            )
+            await self.send_message(pub_text, target_chat_id=self.public_channel_id, idempotency_key=f"{idemp}_PUB")
+
+        # 3. VIP Channel Market Close Summary
+        vip_ch = os.getenv("VIP_CHANNEL_ID", "").strip() or getattr(settings, "vip_channel_id", "") or "-1003416174805"
+        if vip_ch:
+            vip_text = (
+                f"🏁📊 <b>VIP DESK — DAILY P&L REPORT</b> 📊🏁\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 <b>Date:</b> {date_str}\n"
+                f"🎯 <b>Trades Taken:</b> {total_signals}\n"
+                f"✅ <b>Targets Hit:</b> {targets}\n"
+                f"🛑 <b>Stop Loss:</b> {stops}\n"
+                f"💰 <b>Day P&L (1 Lot):</b> <b>{pnl_prefix}₹{pnl:,.2f}</b> {pnl_emoji}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <i>Trading desk closed for today. See you tomorrow at 09:15 AM IST!</i>"
+            )
+            await self.send_message(vip_text, target_chat_id=vip_ch, idempotency_key=f"{idemp}_VIP")
+
+        return True
 
     async def send_ai_learning_report(
         self,

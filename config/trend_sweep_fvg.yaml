@@ -1,0 +1,77 @@
+strategy:
+  name: TREND_SWEEP_FVG_V1
+  version: "1.0.0"
+  mode: SHADOW # 'OFF', 'SHADOW', 'STRICT' (Isolated paper evaluation by default)
+  publish_to_subscribers: false
+  live_orders_enabled: false
+
+universe:
+  symbols:
+    - NIFTY
+    - BANKNIFTY
+    - RELIANCE
+    - HDFCBANK
+    - ICICIBANK
+    - INFY
+    - TCS
+
+session:
+  timezone: Asia/Kolkata
+  market_open: "09:15"
+  entry_start: "10:00"
+  entry_cutoff: "14:30"
+  market_close: "15:30"
+  eod_squareoff: "15:15"
+
+trend_60m:
+  ema_fast_period: 20
+  ema_slow_period: 50
+  ema_slope_lookback_bars: 3
+  swing_pivot_left: 2
+  swing_pivot_right: 2
+
+impulse_15m:
+  max_leg_age_sessions: 3
+  retrace_min_pct: 0.50 # 50% equilibrium
+  retrace_max_pct: 0.786 # 78.6% deep retracement
+  fvg_min_width_atr_mult: 0.05
+  order_block_lookback_bars: 3
+
+trigger_5m:
+  swing_pivot_left: 2
+  swing_pivot_right: 2
+  structure_buffer_atr_mult: 0.05
+  breach_window_bars: 5
+  reclaim_window_bars: 2
+  displacement_window_bars: 3
+  displacement_body_atr_mult: 0.80
+  displacement_body_range_min_ratio: 0.60
+  displacement_close_quarter_threshold: 0.75
+  retest_window_bars: 3
+
+risk_and_exits:
+  paper_capital: 50000.0
+  risk_per_trade_pct: 0.0025 # 0.25% (Rs 125 on Rs 50,000)
+  max_reserved_risk_pct: 0.0075 # 0.75% (Rs 375)
+  max_daily_loss_pct: 0.01 # 1.0% (Rs 500)
+  max_consecutive_losses: 3
+  max_daily_entries: 3
+  rearm_cooldown_bars: 3 # 15 minutes
+  exit_policies:
+    - FIXED_2R
+    - BE_TRAIL_2R
+  default_exit_policy: FIXED_2R
+
+optional_evidence:
+  rvol:
+    mode: SHADOW # 'DISABLED', 'SHADOW', 'REQUIRED'
+    lookback_sessions: 20
+    min_rvol: 1.5
+  volume_profile:
+    mode: SHADOW
+    bins: 64
+    value_area_pct: 0.70
+  smt_divergence:
+    mode: DISABLED
+  cbdr:
+    mode: DISABLED

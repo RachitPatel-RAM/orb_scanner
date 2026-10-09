@@ -5,7 +5,7 @@ Market Session and Trading Hours Manager for NSE (Asia/Kolkata).
 from __future__ import annotations
 
 from datetime import datetime, time, date, timedelta
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 import zoneinfo
 
 from app.config import settings
@@ -81,6 +81,24 @@ class MarketSession:
             return False
         # Official NSE holiday check
         return check_date not in NSE_HOLIDAYS
+
+    def get_previous_trading_days(self, reference_date: Optional[date] = None, count: int = 2) -> List[date]:
+        """
+        Returns the preceding N completed trading sessions (e.g. D-1, D-2)
+        relative to reference_date, strictly excluding reference_date (today).
+        Accurately handles weekends and official exchange holidays.
+        """
+        ref = reference_date or self.now().date()
+        completed_days: List[date] = []
+        cur_date = ref - timedelta(days=1)
+        # Search backwards up to 30 calendar days to safely find N trading sessions
+        for _ in range(30):
+            if self.is_trading_day(cur_date):
+                completed_days.append(cur_date)
+                if len(completed_days) == count:
+                    break
+            cur_date -= timedelta(days=1)
+        return completed_days
 
     def is_market_open(self, dt: Optional[datetime] = None) -> bool:
         """Returns True if current time is within 09:15:00 and 15:30:00 on a weekday (NSE Equity)."""

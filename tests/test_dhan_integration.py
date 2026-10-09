@@ -137,7 +137,25 @@ def test_index_signal_and_live_engine_alias():
         risk_reward=2.0,
         idempotency_key="IDX_NIFTY_2026-10-05_SHORT",
     )
-    markup, lot_sz, margin = order_executor.register_signal_for_approval(nifty_sig)
+    from app.dhan.option_finder import OptionContractInfo
+    from unittest.mock import patch
+    opt_contract = OptionContractInfo(
+        security_id="45678",
+        underlying="NIFTY",
+        custom_symbol="NIFTY 25000 PE",
+        trading_symbol="NIFTY-Oct2026-25000-PE",
+        strike_price=25000.0,
+        option_type="PE",
+        expiry_date="2026-10-15",
+        lot_size=65,
+        exchange_segment="NSE_FNO",
+        ltp=95.0,
+        stop_loss_premium=71.25,
+        target_premium=142.50,
+        margin_required=6175.0,
+    )
+    with patch("app.storage.database.db.get_account_balance", return_value=30000.0):
+        markup, lot_sz, margin = order_executor.register_signal_for_approval(nifty_sig, opt_contract=opt_contract)
     assert lot_sz in (65, 75)
-    assert "PE (Put)" in str(markup)
+    assert "PE" in str(markup)
 

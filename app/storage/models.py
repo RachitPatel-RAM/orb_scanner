@@ -76,6 +76,9 @@ class Signal:
     target: float
     risk_reward: float
     idempotency_key: str
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    target_3: Optional[float] = None
 
     @property
     def risk_amount(self) -> float:
@@ -100,3 +103,19 @@ class PaperTrade:
     pnl: Optional[float] = None
     r_multiple: Optional[float] = None
     status: str = "OPEN"
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    target_3: Optional[float] = None
+    target_1_hit: bool = False
+    target_2_hit: bool = False
+    target_3_hit: bool = False
+    initial_stop_loss: Optional[float] = None
+    quantity: int = 1
+    asset_type: str = "EQUITY"
+    strike_price: Optional[float] = None
+    option_type: Optional[str] = None
+    margin_reserved: float = 0.0
+    entry_charges: float = 0.0
+    exit_charges: float = 0.0
+    total_charges: float = 0.0
+    net_pnl: Optional[float] = None

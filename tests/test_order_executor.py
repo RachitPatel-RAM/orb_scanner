@@ -76,3 +76,62 @@ def test_short_signal_displays_sell_lot_price():
 
     assert f"Sell {qty} Qty" in approve_button["text"]
     assert f"₹{margin_req:,.0f}" in approve_button["text"]
+
+
+@pytest.mark.asyncio
+async def test_admin_broadcast_message_dispatch():
+    from unittest.mock import AsyncMock, patch
+    from app.config import settings
+
+    executor = DhanOrderExecutor()
+    admin_id = str(settings.telegram_chat_id)
+    msg = {
+        "message_id": 9999,
+        "chat": {"id": int(admin_id)},
+        "from": {"id": int(admin_id), "first_name": "Admin"},
+        "text": "Special expiry setup for BANKNIFTY today!",
+    }
+
+    with patch("app.notifications.telegram.notifier.send_message", new_callable=AsyncMock) as mock_send:
+        await executor._handle_message_command(msg)
+        mock_send.assert_called_once()
+        args, kwargs = mock_send.call_args
+        assert "ADMIN BROADCAST DISPATCHER" in args[0]
+        assert "Special expiry setup" in args[0]
+        assert "reply_markup" in kwargs
+        markup = kwargs["reply_markup"]["inline_keyboard"]
+        assert any(b["callback_data"] == "bc:pub:9999" for row in markup for b in row)
+        assert any(b["callback_data"] == "bc:vip:9999" for row in markup for b in row)
+        assert any(b["callback_data"] == "bc:both:9999" for row in markup for b in row)
+
+
+@pytest.mark.asyncio
+async def test_admin_broadcast_callback_copy():
+    from unittest.mock import AsyncMock, patch
+    from app.config import settings
+
+    executor = DhanOrderExecutor()
+    admin_id = str(settings.telegram_chat_id)
+    cb = {
+        "id": "cb_bc_123",
+        "data": "bc:pub:9999",
+        "from": {"id": int(admin_id)},
+        "message": {"chat": {"id": int(admin_id)}, "message_id": 8888},
+    }
+
+    with patch.object(executor, "_answer_callback", new_callable=AsyncMock) as mock_ans, \
+         patch.object(executor, "_copy_message", new_callable=AsyncMock) as mock_copy, \
+         patch.object(executor, "_edit_message", new_callable=AsyncMock) as mock_edit:
+        mock_copy.return_value = True
+
+        await executor._handle_callback(cb)
+
+        mock_ans.assert_called_once()
+        mock_copy.assert_called_once_with(
+            settings.telegram_public_channel_id,
+            admin_id,
+            9999,
+        )
+        mock_edit.assert_called_once()
+        assert "Published to Public Channel" in mock_edit.call_args[0][2]
+

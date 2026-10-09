@@ -36,6 +36,20 @@ class OptionContractInfo:
     margin_required: float
 
 
+def is_valid_price(price: Any) -> bool:
+    """Validates that a price quote is non-null, finite, and strictly positive (> 0.50)."""
+    import math
+    if price is None:
+        return False
+    try:
+        val = float(price)
+        if math.isnan(val) or math.isinf(val):
+            return False
+        return val > 0.5
+    except (ValueError, TypeError):
+        return False
+
+
 class OptionFinder:
     """Finds ATM options contracts and queries real-time premium pricing from DhanHQ."""
 
@@ -160,6 +174,21 @@ class OptionFinder:
 
         # Sort by nearest expiry date
         matched.sort(key=lambda x: x["expiry_date"])
+
+        # Expiry Day Theta Shield:
+        # On expiry day, 0 DTE options suffer exponential time decay (theta burn) after 11:30 AM.
+        # If today is expiry day and a next-week contract exists, roll over to the next weekly expiry
+        # so trade maintains steady delta and intrinsic/extrinsic value without rapid time decay.
+        from datetime import datetime
+        now_dt = datetime.now()
+        is_expiry_today = any(c["expiry_date"].split(" ")[0] == cur_date_str for c in matched)
+        has_next_expiry = any(c["expiry_date"].split(" ")[0] > cur_date_str for c in matched)
+        if is_expiry_today and has_next_expiry and (now_dt.hour > 11 or (now_dt.hour == 11 and now_dt.minute >= 30)):
+            logger.info("🛡️ Expiry Day Theta Shield Active: Shifting to next weekly contract to protect capital from 0 DTE theta decay")
+            next_contracts = [c for c in matched if c["expiry_date"].split(" ")[0] > cur_date_str]
+            if next_contracts:
+                matched = next_contracts
+
         best = matched[0]
 
         # Query live LTP from Dhan
@@ -167,12 +196,13 @@ class OptionFinder:
         exch_seg = best["exchange_segment"]
         ltp = await self.fetch_option_ltp(sec_id, exch_seg)
 
-        # Fallback realistic premium estimation if off-market / API unavailable
-        if ltp <= 0.5:
-            # Rough ATM premium baseline: ~0.45% of underlying spot
-            ltp = round((spot_price * 0.0045) / 5.0) * 5.0
-            if ltp < 30.0:
-                ltp = 95.0
+        # Reject contract if live LTP is unavailable, non-finite (NaN/inf), or <= 0.5
+        if not is_valid_price(ltp):
+            logger.warning(
+                f"Live quote invalid or unavailable for {best['trading_symbol']} (sec_id={sec_id}, ltp={ltp}). "
+                f"Aborting contract lookup to prevent unverified paper entry."
+            )
+            return None
 
         # Calculate Options SL (25% risk) and 1:2 R:R Target (+50% gain)
         sl_premium = round(max(5.0, ltp * 0.75), 2)  # 25% max option risk
@@ -196,8 +226,8 @@ class OptionFinder:
             margin_required=margin_required,
         )
 
-    async def fetch_option_ltp(self, security_id: str, exchange_segment: str = "NSE_FNO") -> float:
-        """Queries Dhan Marketfeed LTP for an option contract."""
+    async def fetch_option_ltp(self, security_id: str, exchange_segment: str = "NSE_FNO") -> Optional[float]:
+        """Queries Dhan Marketfeed LTP for an option contract. Returns None on failure or invalid price."""
         url = "https://api.dhan.co/v2/marketfeed/ltp"
         headers = auth.get_headers()
         payload = {exchange_segment: [int(security_id)]}
@@ -209,9 +239,13 @@ class OptionFinder:
                 data = resp.json().get("data", {}).get(exchange_segment, {})
                 rec = data.get(str(security_id)) or data.get(int(security_id))
                 if rec and "last_price" in rec:
-                    return float(rec["last_price"])
+                    raw_val = rec["last_price"]
+                    if is_valid_price(raw_val):
+                        return float(raw_val)
+                    return None
         except Exception as e:
             logger.debug(f"Error fetching option LTP for {security_id}: {e}")
+        return None
         return 0.0
 
 

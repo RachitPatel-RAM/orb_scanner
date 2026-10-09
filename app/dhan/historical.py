@@ -21,6 +21,7 @@ import zoneinfo
 from app.config import DATA_DIR, logger, settings
 from app.dhan.auth import auth
 from app.market.session import default_session, IST_TZ
+from app.analysis.daily_bias import DailyCandle
 from app.storage.database import db
 from app.storage.models import Candle
 
@@ -83,10 +84,11 @@ class HistoricalDataManager:
         to_str = f"{trade_date.isoformat()} 15:30:00"
 
         endpoint = f"{self.BASE_URL}/charts/intraday"
+        is_index = str(security_id) in ("13", "25", "51")
         payload = {
             "securityId": str(security_id),
-            "exchangeSegment": "NSE_EQ",
-            "instrument": "EQUITY",
+            "exchangeSegment": "IDX_I" if is_index else "NSE_EQ",
+            "instrument": "INDEX" if is_index else "EQUITY",
             "fromDate": from_str,
             "toDate": to_str,
             "interval": str(interval),
@@ -236,5 +238,102 @@ class HistoricalDataManager:
         logger.info(f"Recovered {len(recovered)} candles for {symbol}.")
         return recovered
 
+    async def fetch_daily_candle(
+        self,
+        security_id: str,
+        symbol: str,
+        target_date: date,
+    ) -> Optional[DailyCandle]:
+        """
+        Fetches or reconstructs the completed daily session candle for target_date.
+        Checks SQLite database first, then Dhan API.
+        """
+        from app.analysis.daily_bias import DailyCandle
+
+        date_str = target_date.isoformat()
+
+        # 1. Check local DB 15m or 5m candles
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT open, high, low, close, volume FROM candles_15m WHERE security_id = ? AND timestamp LIKE ? ORDER BY timestamp ASC",
+                (str(security_id), f"{date_str}%")
+            ).fetchall()
+            if not rows:
+                rows = conn.execute(
+                    "SELECT open, high, low, close, volume FROM candles_5m WHERE security_id = ? AND timestamp LIKE ? ORDER BY timestamp ASC",
+                    (str(security_id), f"{date_str}%")
+                ).fetchall()
+
+            if rows and len(rows) >= 3:
+                return DailyCandle(
+                    trade_date=target_date,
+                    open=float(rows[0]["open"]),
+                    high=max(float(r["high"]) for r in rows),
+                    low=min(float(r["low"]) for r in rows),
+                    close=float(rows[-1]["close"]),
+                    volume=sum(float(r["volume"]) for r in rows),
+                    timestamp=f"{date_str} 15:30:00",
+                )
+
+        # 2. Fetch from Dhan REST API
+        if auth.has_credentials:
+            try:
+                headers = auth.get_headers()
+                endpoint = f"{self.BASE_URL}/charts/historical"
+                payload = {
+                    "securityId": str(security_id),
+                    "exchangeSegment": "NSE_EQ" if str(security_id) not in ("13", "25", "51") else "IDX_I",
+                    "instrument": "EQUITY" if str(security_id) not in ("13", "25", "51") else "INDEX",
+                    "fromDate": date_str,
+                    "toDate": date_str,
+                    "expiryCode": 0,
+                }
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(endpoint, json=payload, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    p_data = data.get("data", data)
+                    highs = p_data.get("high", [])
+                    lows = p_data.get("low", [])
+                    closes = p_data.get("close", [])
+                    opens = p_data.get("open", [])
+                    vols = p_data.get("volume", [0.0])
+                    if closes and highs and lows and opens:
+                        return DailyCandle(
+                            trade_date=target_date,
+                            open=float(opens[-1]),
+                            high=float(highs[-1]),
+                            low=float(lows[-1]),
+                            close=float(closes[-1]),
+                            volume=float(vols[-1]) if vols else 0.0,
+                            timestamp=f"{date_str} 15:30:00",
+                        )
+            except Exception as e:
+                logger.debug(f"Dhan charts/historical note for {symbol} ({target_date}): {e}")
+
+        # 3. Fallback to intraday chart if available
+        try:
+            intra_candles = await self.fetch_intraday_candles(
+                security_id=security_id,
+                symbol=symbol,
+                trade_date=target_date,
+                interval=15,
+            )
+            if intra_candles and len(intra_candles) >= 3:
+                return DailyCandle(
+                    trade_date=target_date,
+                    open=intra_candles[0].open,
+                    high=max(c.high for c in intra_candles),
+                    low=min(c.low for c in intra_candles),
+                    close=intra_candles[-1].close,
+                    volume=sum(c.volume for c in intra_candles),
+                    timestamp=f"{date_str} 15:30:00",
+                )
+        except Exception as e:
+            logger.debug(f"Intraday fallback note for {symbol} ({target_date}): {e}")
+
+        return None
+
 
 historical_manager = HistoricalDataManager()
+

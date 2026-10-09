@@ -1,0 +1,12 @@
+{
+  "total_trades": 655,
+  "wins": 332,
+  "losses": 323,
+  "win_rate_pct": 50.69,
+  "starting_capital": 30000.0,
+  "ending_capital": 33791.2,
+  "peak_capital": 38431.7,
+  "max_drawdown_amount": 63523.57,
+  "max_drawdown_pct": 189.78,
+  "csv_path": "D:\\micro tool\\paper_lab\\audit_export\\audit_5year_trades.csv"
+}

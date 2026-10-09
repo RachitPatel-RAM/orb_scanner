@@ -80,6 +80,7 @@ def setup_logger(name: str = "orb_scanner", log_level: str = "INFO") -> logging.
         secrets = [
             os.getenv("DHAN_ACCESS_TOKEN", ""),
             os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            os.getenv("SUPPORT_BOT_TOKEN", ""),
         ]
         sensitive_filter = SensitiveDataFilter(secrets)
         logger.addFilter(sensitive_filter)
@@ -203,6 +204,31 @@ class AppSettings:
         self.telegram_public_channel: str = os.getenv("TELEGRAM_PUBLIC_CHANNEL", "").strip()
         self.telegram_public_channel_id: str = os.getenv("TELEGRAM_PUBLIC_CHANNEL_ID", "").strip()
         self.vip_channel_id: str = os.getenv("VIP_CHANNEL_ID", "").strip()
+        self.vip_channel_link: str = os.getenv("VIP_CHANNEL_LINK", "https://t.me/+2g9S5T6G5Js3OWQ1").strip()
+        self.support_bot_token: str = os.getenv("SUPPORT_BOT_TOKEN", "").strip()
+        self.support_bot_username: str = os.getenv("SUPPORT_BOT_USERNAME", "bornbullsupportbot").strip()
+        self.upi_id: str = os.getenv("UPI_ID", "patel.rachit@superyes").strip()
+
+        # Daily Bias & Gate Configuration
+        self.bias_gate_mode: str = os.getenv("BIAS_GATE_MODE", "SHADOW").strip().upper()
+        if self.bias_gate_mode not in ("OFF", "SHADOW", "STRICT"):
+            self.bias_gate_mode = "SHADOW"
+
+        self.channel_publishing_enabled: bool = (
+            os.getenv("CHANNEL_PUBLISHING_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.live_order_enabled: bool = (
+            os.getenv("LIVE_ORDER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.session_context_enabled: bool = (
+            os.getenv("SESSION_CONTEXT_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.allow_neutral_intraday_fallback: bool = (
+            os.getenv("ALLOW_NEUTRAL_INTRADAY_FALLBACK", "false").strip().lower() in ("true", "1", "yes")
+        )
+        self.daily_reference_mode: str = os.getenv("DAILY_REFERENCE_MODE", "TWO_COMPLETED_SESSIONS").strip().upper()
+        self.daily_bias_time: str = os.getenv("DAILY_BIAS_TIME", "09:05").strip()
+        self.bias_rule_version: str = os.getenv("BIAS_RULE_VERSION", "v1.0").strip()
 
         # Validate timezone
         try:

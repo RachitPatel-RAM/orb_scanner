@@ -99,11 +99,13 @@ class PaperTracker:
         on_target_hit: Optional[Callable[[PaperTrade], None]] = None,
         on_stop_hit: Optional[Callable[[PaperTrade], None]] = None,
         on_eod_squareoff: Optional[Callable[[PaperTrade], None]] = None,
+        on_milestone_hit: Optional[Callable[[PaperTrade, int, float], None]] = None,
     ):
         self.costs = costs or settings.strategy.costs
         self.on_target_hit = on_target_hit
         self.on_stop_hit = on_stop_hit
         self.on_eod_squareoff = on_eod_squareoff
+        self.on_milestone_hit = on_milestone_hit
 
         # Active open trades by ID
         self.open_trades: Dict[int, PaperTrade] = {}
@@ -134,6 +136,10 @@ class PaperTracker:
             stop_loss=signal.stop_loss,
             target=signal.target,
             status="OPEN",
+            target_1=signal.target_1 or signal.target,
+            target_2=signal.target_2,
+            target_3=signal.target_3,
+            initial_stop_loss=signal.stop_loss,
         )
 
         self.open_trades[trade_id] = trade
@@ -188,48 +194,108 @@ class PaperTracker:
 
             # Evaluate Price Actions
             if trade.direction == Direction.LONG:
-                target_hit = candle.high >= trade.target
-                stop_hit = candle.low <= trade.stop_loss
+                final_target = trade.target_3 or trade.target_2 or trade.target
+                current_sl = trade.stop_loss
+                target_hit = candle.high >= final_target
+                stop_hit = candle.low <= current_sl
 
                 if target_hit and stop_hit:
                     # CONSERVATIVE TIE-BREAKING POLICY:
                     # If both SL and Target are within the same candle range and intra-candle ticks
                     # are ambiguous, assume Stop Loss was hit first. Never fabricate optimistic results.
-                    self._close_trade(trade, trade.stop_loss, candle_time, ExitReason.STOP_LOSS)
+                    self._close_trade(trade, current_sl, candle_time, ExitReason.STOP_LOSS)
                     closed_trades.append(trade)
                     if self.on_stop_hit:
                         self.on_stop_hit(trade)
-                elif target_hit:
-                    self._close_trade(trade, trade.target, candle_time, ExitReason.TARGET)
+                    continue
+                elif stop_hit:
+                    self._close_trade(trade, current_sl, candle_time, ExitReason.STOP_LOSS)
+                    closed_trades.append(trade)
+                    if self.on_stop_hit:
+                        self.on_stop_hit(trade)
+                    continue
+
+                # 1. Milestone Target 1 (Adjust Stop Loss to Break-Even Entry)
+                if trade.target_1 and not trade.target_1_hit:
+                    if candle.high >= trade.target_1:
+                        trade.target_1_hit = True
+                        trade.stop_loss = max(trade.stop_loss, trade.entry_price)
+                        logger.info(
+                            f"Milestone Hit: {trade.symbol} Target 1 achieved at ₹{trade.target_1:,.2f}. "
+                            f"SL moved to Entry ₹{trade.entry_price:,.2f}."
+                        )
+                        if self.on_milestone_hit:
+                            self.on_milestone_hit(trade, 1, trade.target_1)
+
+                # 2. Milestone Target 2 (Trail Stop Loss to Target 1)
+                if trade.target_2 and trade.target_1_hit and not trade.target_2_hit:
+                    if candle.high >= trade.target_2:
+                        trade.target_2_hit = True
+                        if trade.target_1:
+                            trade.stop_loss = max(trade.stop_loss, trade.target_1)
+                        logger.info(
+                            f"Milestone Hit: {trade.symbol} Target 2 achieved at ₹{trade.target_2:,.2f}. "
+                            f"SL trailed to Target 1 ₹{trade.stop_loss:,.2f}."
+                        )
+                        if self.on_milestone_hit:
+                            self.on_milestone_hit(trade, 2, trade.target_2)
+
+                if target_hit:
+                    self._close_trade(trade, final_target, candle_time, ExitReason.TARGET)
                     closed_trades.append(trade)
                     if self.on_target_hit:
                         self.on_target_hit(trade)
-                elif stop_hit:
-                    self._close_trade(trade, trade.stop_loss, candle_time, ExitReason.STOP_LOSS)
-                    closed_trades.append(trade)
-                    if self.on_stop_hit:
-                        self.on_stop_hit(trade)
 
             elif trade.direction == Direction.SHORT:
-                target_hit = candle.low <= trade.target
-                stop_hit = candle.high >= trade.stop_loss
+                final_target = trade.target_3 or trade.target_2 or trade.target
+                current_sl = trade.stop_loss
+                target_hit = candle.low <= final_target
+                stop_hit = candle.high >= current_sl
 
                 if target_hit and stop_hit:
                     # CONSERVATIVE TIE-BREAKING POLICY:
-                    self._close_trade(trade, trade.stop_loss, candle_time, ExitReason.STOP_LOSS)
+                    self._close_trade(trade, current_sl, candle_time, ExitReason.STOP_LOSS)
                     closed_trades.append(trade)
                     if self.on_stop_hit:
                         self.on_stop_hit(trade)
-                elif target_hit:
-                    self._close_trade(trade, trade.target, candle_time, ExitReason.TARGET)
+                    continue
+                elif stop_hit:
+                    self._close_trade(trade, current_sl, candle_time, ExitReason.STOP_LOSS)
+                    closed_trades.append(trade)
+                    if self.on_stop_hit:
+                        self.on_stop_hit(trade)
+                    continue
+
+                # 1. Milestone Target 1 (Adjust Stop Loss to Break-Even Entry)
+                if trade.target_1 and not trade.target_1_hit:
+                    if candle.low <= trade.target_1:
+                        trade.target_1_hit = True
+                        trade.stop_loss = min(trade.stop_loss, trade.entry_price)
+                        logger.info(
+                            f"Milestone Hit: {trade.symbol} Target 1 achieved at ₹{trade.target_1:,.2f}. "
+                            f"SL moved to Entry ₹{trade.entry_price:,.2f}."
+                        )
+                        if self.on_milestone_hit:
+                            self.on_milestone_hit(trade, 1, trade.target_1)
+
+                # 2. Milestone Target 2 (Trail Stop Loss to Target 1)
+                if trade.target_2 and trade.target_1_hit and not trade.target_2_hit:
+                    if candle.low <= trade.target_2:
+                        trade.target_2_hit = True
+                        if trade.target_1:
+                            trade.stop_loss = min(trade.stop_loss, trade.target_1)
+                        logger.info(
+                            f"Milestone Hit: {trade.symbol} Target 2 achieved at ₹{trade.target_2:,.2f}. "
+                            f"SL trailed to Target 1 ₹{trade.stop_loss:,.2f}."
+                        )
+                        if self.on_milestone_hit:
+                            self.on_milestone_hit(trade, 2, trade.target_2)
+
+                if target_hit:
+                    self._close_trade(trade, final_target, candle_time, ExitReason.TARGET)
                     closed_trades.append(trade)
                     if self.on_target_hit:
                         self.on_target_hit(trade)
-                elif stop_hit:
-                    self._close_trade(trade, trade.stop_loss, candle_time, ExitReason.STOP_LOSS)
-                    closed_trades.append(trade)
-                    if self.on_stop_hit:
-                        self.on_stop_hit(trade)
 
         return closed_trades
 
@@ -249,27 +315,88 @@ class PaperTracker:
                 continue
 
             if trade.direction == Direction.LONG:
-                if ltp >= trade.target:
-                    self._close_trade(trade, trade.target, t_time, ExitReason.TARGET)
-                    closed_trades.append(trade)
-                    if self.on_target_hit:
-                        self.on_target_hit(trade)
-                elif ltp <= trade.stop_loss:
-                    self._close_trade(trade, trade.stop_loss, t_time, ExitReason.STOP_LOSS)
+                final_target = trade.target_3 or trade.target_2 or trade.target
+                current_sl = trade.stop_loss
+
+                if ltp <= current_sl:
+                    self._close_trade(trade, current_sl, t_time, ExitReason.STOP_LOSS)
                     closed_trades.append(trade)
                     if self.on_stop_hit:
                         self.on_stop_hit(trade)
+                    continue
+
+                # 1. Milestone Target 1 (Adjust Stop Loss to Break-Even Entry)
+                if trade.target_1 and not trade.target_1_hit:
+                    if ltp >= trade.target_1:
+                        trade.target_1_hit = True
+                        trade.stop_loss = max(trade.stop_loss, trade.entry_price)
+                        logger.info(
+                            f"Milestone Hit: {trade.symbol} Target 1 reached at ₹{trade.target_1:,.2f}. "
+                            f"SL moved to Entry ₹{trade.entry_price:,.2f}."
+                        )
+                        if self.on_milestone_hit:
+                            self.on_milestone_hit(trade, 1, trade.target_1)
+
+                # 2. Milestone Target 2 (Trail Stop Loss to Target 1)
+                if trade.target_2 and trade.target_1_hit and not trade.target_2_hit:
+                    if ltp >= trade.target_2:
+                        trade.target_2_hit = True
+                        if trade.target_1:
+                            trade.stop_loss = max(trade.stop_loss, trade.target_1)
+                        logger.info(
+                            f"Milestone Hit: {trade.symbol} Target 2 reached at ₹{trade.target_2:,.2f}. "
+                            f"SL trailed to Target 1 ₹{trade.stop_loss:,.2f}."
+                        )
+                        if self.on_milestone_hit:
+                            self.on_milestone_hit(trade, 2, trade.target_2)
+
+                if ltp >= final_target:
+                    self._close_trade(trade, final_target, t_time, ExitReason.TARGET)
+                    closed_trades.append(trade)
+                    if self.on_target_hit:
+                        self.on_target_hit(trade)
+
             elif trade.direction == Direction.SHORT:
-                if ltp <= trade.target:
-                    self._close_trade(trade, trade.target, t_time, ExitReason.TARGET)
-                    closed_trades.append(trade)
-                    if self.on_target_hit:
-                        self.on_target_hit(trade)
-                elif ltp >= trade.stop_loss:
-                    self._close_trade(trade, trade.stop_loss, t_time, ExitReason.STOP_LOSS)
+                final_target = trade.target_3 or trade.target_2 or trade.target
+                current_sl = trade.stop_loss
+
+                if ltp >= current_sl:
+                    self._close_trade(trade, current_sl, t_time, ExitReason.STOP_LOSS)
                     closed_trades.append(trade)
                     if self.on_stop_hit:
                         self.on_stop_hit(trade)
+                    continue
+
+                # 1. Milestone Target 1 (Adjust Stop Loss to Break-Even Entry)
+                if trade.target_1 and not trade.target_1_hit:
+                    if ltp <= trade.target_1:
+                        trade.target_1_hit = True
+                        trade.stop_loss = min(trade.stop_loss, trade.entry_price)
+                        logger.info(
+                            f"Milestone Hit: {trade.symbol} Target 1 reached at ₹{trade.target_1:,.2f}. "
+                            f"SL moved to Entry ₹{trade.entry_price:,.2f}."
+                        )
+                        if self.on_milestone_hit:
+                            self.on_milestone_hit(trade, 1, trade.target_1)
+
+                # 2. Milestone Target 2 (Trail Stop Loss to Target 1)
+                if trade.target_2 and trade.target_1_hit and not trade.target_2_hit:
+                    if ltp <= trade.target_2:
+                        trade.target_2_hit = True
+                        if trade.target_1:
+                            trade.stop_loss = min(trade.stop_loss, trade.target_1)
+                        logger.info(
+                            f"Milestone Hit: {trade.symbol} Target 2 reached at ₹{trade.target_2:,.2f}. "
+                            f"SL trailed to Target 1 ₹{trade.stop_loss:,.2f}."
+                        )
+                        if self.on_milestone_hit:
+                            self.on_milestone_hit(trade, 2, trade.target_2)
+
+                if ltp <= final_target:
+                    self._close_trade(trade, final_target, t_time, ExitReason.TARGET)
+                    closed_trades.append(trade)
+                    if self.on_target_hit:
+                        self.on_target_hit(trade)
 
         return closed_trades
 
@@ -286,16 +413,69 @@ class PaperTracker:
         trade.exit_reason = exit_reason
         trade.status = "CLOSED"
 
-        risk_amount = abs(trade.entry_price - trade.stop_loss)
+        orig_sl = trade.initial_stop_loss if trade.initial_stop_loss is not None else trade.stop_loss
+        risk_amount = abs(trade.entry_price - orig_sl)
+
+        qty = getattr(trade, "quantity", 1) or 1
+        asset_type = getattr(trade, "asset_type", "EQUITY") or "EQUITY"
 
         if trade.direction == Direction.LONG:
-            gross_pnl = exit_price - trade.entry_price
+            gross_pnl_per_unit = exit_price - trade.entry_price
         else:
-            gross_pnl = trade.entry_price - exit_price
+            gross_pnl_per_unit = trade.entry_price - exit_price
 
-        # R-Multiple calculation
-        trade.r_multiple = (gross_pnl / risk_amount) if risk_amount > 0 else 0.0
+        gross_pnl = gross_pnl_per_unit * qty
+
+        if asset_type == "OPTION":
+            # Indian F&O option exit regulatory charges: ~Rs 60 per executed lot
+            lots = max(1, qty // 75)
+            exit_charges = round(60.0 * lots, 2)
+            entry_charges = getattr(trade, "entry_charges", 60.0 * lots) or (60.0 * lots)
+            total_charges = round(entry_charges + exit_charges, 2)
+            net_pnl = round(gross_pnl - total_charges, 2)
+
+            # Cash release and ledger recording
+            exit_value = round(exit_price * qty, 2)
+            cash_returned = round(exit_value - exit_charges, 2)
+
+            current_cap = db.get_account_balance()
+            new_cap = round(current_cap + cash_returned, 2)
+            db.set_account_balance(new_cap)
+
+            db.record_ledger_entry(
+                transaction_type="CASH_RELEASE",
+                amount=exit_value,
+                balance_before=current_cap,
+                balance_after=current_cap + exit_value,
+                description=f"Released gross option proceeds for {trade.symbol} (#{trade.id})",
+                trade_id=trade.id,
+            )
+            db.record_ledger_entry(
+                transaction_type="EXIT_CHARGES",
+                amount=-exit_charges,
+                balance_before=current_cap + exit_value,
+                balance_after=new_cap,
+                description=f"Statutory exit charges for {trade.symbol} (#{trade.id})",
+                trade_id=trade.id,
+            )
+            db.record_ledger_entry(
+                transaction_type="REALIZED_PNL",
+                amount=net_pnl,
+                balance_before=current_cap,
+                balance_after=new_cap,
+                description=f"Realized Net PnL for {trade.symbol} (#{trade.id})",
+                trade_id=trade.id,
+            )
+        else:
+            cost_bd = calculate_trade_costs(trade.entry_price, exit_price, qty, trade.direction, self.costs)
+            exit_charges = round(cost_bd.total_charges / 2.0, 2)
+            total_charges = cost_bd.total_charges
+            net_pnl = round(gross_pnl - total_charges, 2)
+            db.update_account_balance(net_pnl)
+
+        trade.r_multiple = (gross_pnl_per_unit / risk_amount) if risk_amount > 0 else 0.0
         trade.pnl = round(gross_pnl, 2)
+        trade.net_pnl = net_pnl
 
         if trade.id in self.open_trades:
             del self.open_trades[trade.id]
@@ -308,9 +488,11 @@ class PaperTracker:
                 exit_reason=trade.exit_reason.value,
                 pnl=trade.pnl,
                 r_multiple=round(trade.r_multiple, 2),
+                exit_charges=exit_charges,
+                net_pnl=net_pnl,
             )
 
         logger.info(
             f"Closed Virtual Trade #{trade.id} ({trade.symbol}): Reason={exit_reason.value} "
-            f"@ ₹{exit_price:.2f} | PnL=₹{trade.pnl:.2f} | R={trade.r_multiple:.2f}R"
+            f"@ ₹{exit_price:.2f} | Net PnL=₹{trade.pnl:.2f} | R={trade.r_multiple:.2f}R"
         )

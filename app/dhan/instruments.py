@@ -32,6 +32,13 @@ class InstrumentInfo:
     tick_size: float = 0.05
 
 
+INDEX_DEFS: List[Tuple[str, str, str, str, str, int, float]] = [
+    ("13", "NIFTY", "Nifty 50", "NSE", "IDX_I", 75, 0.05),
+    ("25", "BANKNIFTY", "Nifty Bank", "NSE", "IDX_I", 30, 0.05),
+    ("51", "SENSEX", "Sensex", "BSE", "IDX_I", 20, 0.05),
+]
+
+
 class InstrumentManager:
     """Manages the download, local caching, parsing, and resolution of Dhan instruments."""
 
@@ -46,6 +53,27 @@ class InstrumentManager:
         self.instruments_by_id: Dict[str, InstrumentInfo] = {}
         self.fno_symbols: Set[str] = set()
         self.fno_lot_sizes: Dict[str, int] = {}
+
+        # Register core index definitions
+        for sec_id, sym, d_name, exch, seg, lot, tick in INDEX_DEFS:
+            inst = InstrumentInfo(
+                security_id=sec_id,
+                symbol=sym,
+                display_name=d_name,
+                exchange_segment=seg,
+                instrument_type="INDEX",
+                lot_size=lot,
+                tick_size=tick,
+            )
+            self.instruments_by_id[sec_id] = inst
+            self.sec_id_to_symbol[sec_id] = sym
+            self.symbol_to_sec_id[sym] = sec_id
+        # Aliases for robust resolution
+        self.symbol_to_sec_id["NIFTY 50"] = "13"
+        self.symbol_to_sec_id["NIFTY50"] = "13"
+        self.symbol_to_sec_id["BANK NIFTY"] = "25"
+        self.symbol_to_sec_id["NIFTY BANK"] = "25"
+        self.symbol_to_sec_id["BSE SENSEX"] = "51"
 
     def is_cache_valid(self) -> bool:
         """Checks if local cached CSV exists and is within refresh interval."""
@@ -179,7 +207,26 @@ class InstrumentManager:
         if bulk_items:
             db.save_instruments_bulk(bulk_items)
 
-        logger.info(f"Loaded and indexed {count} NSE Equity instruments.")
+        for sec_id, sym, d_name, exch, seg, lot, tick in INDEX_DEFS:
+            inst = InstrumentInfo(
+                security_id=sec_id,
+                symbol=sym,
+                display_name=d_name,
+                exchange_segment=seg,
+                instrument_type="INDEX",
+                lot_size=lot,
+                tick_size=tick,
+            )
+            self.instruments_by_id[sec_id] = inst
+            self.sec_id_to_symbol[sec_id] = sym
+            self.symbol_to_sec_id[sym] = sec_id
+        self.symbol_to_sec_id["NIFTY 50"] = "13"
+        self.symbol_to_sec_id["NIFTY50"] = "13"
+        self.symbol_to_sec_id["BANK NIFTY"] = "25"
+        self.symbol_to_sec_id["NIFTY BANK"] = "25"
+        self.symbol_to_sec_id["BSE SENSEX"] = "51"
+
+        logger.info(f"Loaded and indexed {count} NSE Equity instruments and core indices.")
 
     def get_security_id(self, symbol: str) -> Optional[str]:
         """Resolves symbol to security_id."""
@@ -217,7 +264,12 @@ class InstrumentManager:
         target_mode = (mode or self.config.mode).lower()
         results: List[InstrumentInfo] = []
 
-        if target_mode == "custom":
+        if target_mode in ("indices_only", "indices"):
+            for sec_id, sym, d_name, exch, seg, lot, tick in INDEX_DEFS:
+                if sec_id in self.instruments_by_id:
+                    results.append(self.instruments_by_id[sec_id])
+
+        elif target_mode == "custom":
             symbols = self.config.custom_symbols
             for s in symbols:
                 sec_id = self.get_security_id(s)

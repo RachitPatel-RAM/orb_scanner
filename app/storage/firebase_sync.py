@@ -131,6 +131,55 @@ class FirebaseSyncManager:
             logger.warning(f"Error syncing live account funds to Firebase: {e}")
             return False
 
+    async def save_vip_subscriber(self, sub_data: Dict[str, Any]) -> bool:
+        """Saves a VIP subscriber record to Firebase Realtime Database (/vip_subscribers/{telegram_id})."""
+        tg_id = str(sub_data.get("telegram_id", "")).strip()
+        if not tg_id:
+            return False
+        url = f"{self.base_url}/vip_subscribers/{tg_id}.json"
+        payload = self._sanitize({
+            **sub_data,
+            "synced_at": datetime.now().isoformat(),
+        })
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.put(url, json=payload)
+                if resp.status_code == 200:
+                    logger.info(f"Successfully synced VIP subscriber {tg_id} to Firebase.")
+                    return True
+        except Exception as e:
+            logger.warning(f"Error syncing VIP subscriber to Firebase: {e}")
+        return False
+
+    async def deactivate_vip_subscriber(self, telegram_id: str) -> bool:
+        """Marks VIP subscriber as inactive in Firebase Realtime Database."""
+        tg_id = str(telegram_id).strip()
+        if not tg_id:
+            return False
+        url = f"{self.base_url}/vip_subscribers/{tg_id}/is_active.json"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.put(url, json=False)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.warning(f"Error deactivating VIP subscriber in Firebase: {e}")
+        return False
+
+    async def save_vip_channel_status(self, channel_data: Dict[str, Any]) -> bool:
+        """Saves current VIP channel health & status to Firebase Realtime Database."""
+        url = f"{self.base_url}/vip_channel/status.json"
+        payload = self._sanitize({
+            **channel_data,
+            "updated_at": datetime.now().isoformat(),
+        })
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.put(url, json=payload)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.warning(f"Error syncing VIP channel status to Firebase: {e}")
+        return False
+
 
 firebase_sync = FirebaseSyncManager()
 

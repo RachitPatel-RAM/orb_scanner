@@ -133,6 +133,73 @@ class Database:
             );
             """)
 
+            # 60-minute Candles (Hourly trend evaluation, session-open anchored)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS candles_60m (
+                security_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timestamp TEXT NOT NULL, -- ISO-8601
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume REAL NOT NULL,
+                is_closed INTEGER DEFAULT 1,
+                PRIMARY KEY (security_id, timestamp)
+            );
+            """)
+
+            # Trend Sweep FVG V1 Setups & Lifecycle Tracking
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trend_sweep_setups (
+                signal_id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                security_id TEXT NOT NULL,
+                strategy_version TEXT NOT NULL DEFAULT 'TREND_SWEEP_FVG_V1',
+                direction TEXT NOT NULL,
+                status TEXT NOT NULL,
+                detected_at TEXT,
+                known_at TEXT,
+                trade_date TEXT NOT NULL,
+                impulse_high REAL,
+                impulse_low REAL,
+                fib_retracement_min REAL,
+                fib_retracement_max REAL,
+                poi_id TEXT,
+                poi_type TEXT,
+                poi_high REAL,
+                poi_low REAL,
+                swept_level REAL,
+                sweep_extreme REAL,
+                reclaim_time TEXT,
+                pre_breach_structure_ref REAL,
+                displacement_bar_time TEXT,
+                fvg_id TEXT,
+                fvg_top REAL,
+                fvg_bottom REAL,
+                planned_entry REAL,
+                initial_stop REAL,
+                target_price REAL,
+                nominal_rr REAL,
+                net_rr REAL,
+                heuristic_score INTEGER,
+                score_breakdown_json TEXT,
+                rejection_reason TEXT,
+                exit_version TEXT,
+                filled_price REAL,
+                filled_time TEXT,
+                exit_price REAL,
+                exit_time TEXT,
+                exit_reason TEXT,
+                realized_pnl REAL,
+                realized_r REAL,
+                quantity INTEGER,
+                raw_setup_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+
             # ORB Daily Levels
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS orb_daily_levels (
@@ -193,6 +260,21 @@ class Database:
             );
             """)
 
+            # Auditable Paper Account Ledger
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS paper_account_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                trade_id INTEGER,
+                transaction_type TEXT NOT NULL, -- 'CASH_RESERVATION', 'CASH_RELEASE', 'ENTRY_CHARGES', 'EXIT_CHARGES', 'REALIZED_PNL'
+                amount REAL NOT NULL,
+                balance_before REAL NOT NULL,
+                balance_after REAL NOT NULL,
+                description TEXT NOT NULL,
+                FOREIGN KEY (trade_id) REFERENCES paper_trades (id)
+            );
+            """)
+
             # Alerts
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS alerts (
@@ -213,6 +295,24 @@ class Database:
             for col, col_type in [("message_id", "INTEGER"), ("chat_id", "TEXT"), ("is_deleted", "INTEGER DEFAULT 0")]:
                 try:
                     cursor.execute(f"ALTER TABLE alerts ADD COLUMN {col} {col_type};")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Migrate paper_trades columns for option paper trading
+            paper_cols = [
+                ("quantity", "INTEGER DEFAULT 1"),
+                ("asset_type", "TEXT DEFAULT 'EQUITY'"),
+                ("strike_price", "REAL"),
+                ("option_type", "TEXT"),
+                ("margin_reserved", "REAL DEFAULT 0.0"),
+                ("entry_charges", "REAL DEFAULT 0.0"),
+                ("exit_charges", "REAL DEFAULT 0.0"),
+                ("total_charges", "REAL DEFAULT 0.0"),
+                ("net_pnl", "REAL DEFAULT 0.0"),
+            ]
+            for col, col_type in paper_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {col_type};")
                 except sqlite3.OperationalError:
                     pass
 
@@ -275,16 +375,92 @@ class Database:
             );
             """)
 
+            # Daily Bias Snapshots Table (Section 6 immutable snapshots)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS daily_bias_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                security_id TEXT NOT NULL,
+                exchange TEXT NOT NULL DEFAULT 'NSE',
+                trading_date TEXT NOT NULL,
+                previous_session_date TEXT NOT NULL,
+                reference_session_date TEXT NOT NULL,
+                previous_close REAL NOT NULL,
+                reference_high REAL NOT NULL,
+                reference_low REAL NOT NULL,
+                daily_bias TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                source_data_timestamp TEXT,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                rule_version TEXT NOT NULL,
+                data_health TEXT NOT NULL,
+                raw_details_json TEXT,
+                is_corrected INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, trading_date, rule_version)
+            );
+            """)
+
+            # Intraday Liquidity Context Events Table (Section 7 swing/sweep state)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS liquidity_context_events (
+                event_id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                security_id TEXT NOT NULL,
+                timeframe_minutes INTEGER DEFAULT 60,
+                pivot_type TEXT NOT NULL,
+                level_price REAL NOT NULL,
+                breach_bar_time TEXT NOT NULL,
+                confirmation_time TEXT NOT NULL,
+                reclaim_bars INTEGER NOT NULL,
+                sweep_direction TEXT NOT NULL,
+                sweep_extreme REAL NOT NULL,
+                status TEXT NOT NULL,
+                expiry_time TEXT NOT NULL,
+                invalidation_time TEXT,
+                rule_version TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+
+            # Bias Gate Decisions Table (Section 9 auditable gate decisions)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bias_gate_decisions (
+                decision_id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                security_id TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                candidate_direction TEXT NOT NULL,
+                gate_mode TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                would_allow INTEGER NOT NULL,
+                is_allowed INTEGER NOT NULL,
+                daily_bias_snapshot_id TEXT,
+                liquidity_context_event_id TEXT,
+                reason_code TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+
             # Indexes for ultra-fast lookup
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles1m_sec_ts ON candles_1m(security_id, timestamp);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles5m_sec_ts ON candles_5m(security_id, timestamp);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles15m_sec_ts ON candles_15m(security_id, timestamp);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_candles60m_sec_ts ON candles_60m(security_id, timestamp);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trend_sweep_status ON trend_sweep_setups(status, symbol);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trend_sweep_date ON trend_sweep_setups(trade_date, symbol);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_orb_date_sec ON orb_daily_levels(trade_date, security_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_date_sec ON signals(trade_date, security_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_idemp ON signals(idempotency_key);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_status ON paper_trades(status, security_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_date ON paper_trades(trade_date);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_idemp ON alerts(idempotency_key);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bias_sym_date ON daily_bias_snapshots(symbol, trading_date);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_liq_ctx_sym_status ON liquidity_context_events(symbol, status);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_gate_dec_date_sym ON bias_gate_decisions(trade_date, symbol);")
 
     # Helper methods
     def save_instrument(self, security_id: str, symbol: str, display_name: str,
@@ -362,6 +538,29 @@ class Database:
             ).fetchall()
             return [dict(r) for r in reversed(rows)]
 
+    def save_candle_60m(self, security_id: str, symbol: str, timestamp: str,
+                        open_: float, high: float, low: float, close: float, volume: float, is_closed: bool = True) -> None:
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO candles_60m (security_id, symbol, timestamp, open, high, low, close, volume, is_closed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(security_id, timestamp) DO UPDATE SET
+                    open=excluded.open,
+                    high=excluded.high,
+                    low=excluded.low,
+                    close=excluded.close,
+                    volume=excluded.volume,
+                    is_closed=excluded.is_closed;
+            """, (security_id, symbol, timestamp, open_, high, low, close, volume, 1 if is_closed else 0))
+
+    def get_recent_candles_60m(self, security_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM candles_60m WHERE security_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (security_id, limit)
+            ).fetchall()
+            return [dict(r) for r in reversed(rows)]
+
     def save_orb_levels(self, trade_date: str, security_id: str, symbol: str,
                         orb_high: float, orb_low: float, orb_mid: float, is_complete: bool = True) -> None:
         with self.get_connection() as conn:
@@ -411,19 +610,52 @@ class Database:
                 logger.info(f"Signal already exists for key {idempotency_key} (idempotent skipped)")
                 return None
 
-    def save_paper_trade(self, signal_id: Optional[int], trade_date: str, security_id: str,
-                         symbol: str, direction: str, entry_price: float,
-                         entry_time: str, stop_loss: float, target: float) -> int:
+    def save_paper_trade(
+        self,
+        signal_id: Optional[int],
+        trade_date: str,
+        security_id: str,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        entry_time: str,
+        stop_loss: float,
+        target: float,
+        quantity: int = 1,
+        asset_type: str = "EQUITY",
+        strike_price: Optional[float] = None,
+        option_type: Optional[str] = None,
+        margin_reserved: float = 0.0,
+        entry_charges: float = 0.0,
+    ) -> int:
         with self.get_connection() as conn:
             cursor = conn.execute("""
-                INSERT INTO paper_trades (signal_id, trade_date, security_id, symbol, direction,
-                                          entry_price, entry_time, stop_loss, target, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
-            """, (signal_id, trade_date, security_id, symbol, direction, entry_price, entry_time, stop_loss, target))
+                INSERT INTO paper_trades (
+                    signal_id, trade_date, security_id, symbol, direction,
+                    entry_price, entry_time, stop_loss, target, status,
+                    quantity, asset_type, strike_price, option_type,
+                    margin_reserved, entry_charges
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?)
+            """, (
+                signal_id, trade_date, security_id, symbol, direction,
+                entry_price, entry_time, stop_loss, target,
+                quantity, asset_type, strike_price, option_type,
+                margin_reserved, entry_charges,
+            ))
             return cursor.lastrowid
 
-    def close_paper_trade(self, trade_id: int, exit_price: float, exit_time: str,
-                          exit_reason: str, pnl: float, r_multiple: float) -> None:
+    def close_paper_trade(
+        self,
+        trade_id: int,
+        exit_price: float,
+        exit_time: str,
+        exit_reason: str,
+        pnl: float,
+        r_multiple: float,
+        exit_charges: float = 0.0,
+        net_pnl: Optional[float] = None,
+    ) -> None:
         with self.get_connection() as conn:
             conn.execute("""
                 UPDATE paper_trades
@@ -432,10 +664,42 @@ class Database:
                     exit_reason = ?,
                     pnl = ?,
                     r_multiple = ?,
+                    exit_charges = ?,
+                    total_charges = COALESCE(entry_charges, 0.0) + ?,
+                    net_pnl = ?,
                     status = 'CLOSED',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (exit_price, exit_time, exit_reason, pnl, r_multiple, trade_id))
+            """, (
+                exit_price, exit_time, exit_reason, pnl, r_multiple,
+                exit_charges, exit_charges, net_pnl if net_pnl is not None else pnl,
+                trade_id,
+            ))
+
+    def record_ledger_entry(
+        self,
+        transaction_type: str,
+        amount: float,
+        balance_before: float,
+        balance_after: float,
+        description: str,
+        trade_id: Optional[int] = None,
+        timestamp: Optional[str] = None,
+    ) -> int:
+        ts = timestamp or datetime.now().isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO paper_account_ledger (timestamp, trade_id, transaction_type, amount, balance_before, balance_after, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (ts, trade_id, transaction_type, round(amount, 2), round(balance_before, 2), round(balance_after, 2), description))
+            return cursor.lastrowid
+
+    def get_paper_ledger(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM paper_account_ledger ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def get_open_paper_trades(self, trade_date: Optional[str] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -504,6 +768,15 @@ class Database:
                 except (ValueError, TypeError):
                     pass
             return default_capital
+
+    def set_account_balance(self, balance: float) -> None:
+        """Sets the exact persistent account balance in settings_kv."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO settings_kv (key, value, updated_at)
+                VALUES ('account_balance', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """, (str(round(balance, 2)),))
 
     def update_account_balance(self, pnl: float, default_capital: float = 4322.0) -> float:
         """Updates and compounds trading capital with realized trade PnL."""
@@ -665,6 +938,327 @@ class Database:
             ).fetchone()
             return dict(row) if row else None
 
+    # -------------------------------------------------------------
+    # Daily Bias Engine Repository Methods
+    # -------------------------------------------------------------
+    def save_daily_bias_snapshot(self, snapshot: Dict[str, Any]) -> str:
+        """Persists immutable daily bias snapshot."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO daily_bias_snapshots (
+                    snapshot_id, symbol, security_id, exchange, trading_date,
+                    previous_session_date, reference_session_date,
+                    previous_close, reference_high, reference_low,
+                    daily_bias, reason_code, source_data_timestamp,
+                    calculated_at, rule_version, data_health, raw_details_json, is_corrected
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    is_corrected = excluded.is_corrected,
+                    raw_details_json = excluded.raw_details_json;
+            """, (
+                snapshot["snapshot_id"],
+                snapshot["symbol"],
+                str(snapshot.get("security_id", "")),
+                snapshot.get("exchange", "NSE"),
+                snapshot["trading_date"],
+                snapshot["previous_session_date"],
+                snapshot["reference_session_date"],
+                float(snapshot["previous_close"]),
+                float(snapshot["reference_high"]),
+                float(snapshot["reference_low"]),
+                snapshot["daily_bias"],
+                snapshot["reason_code"],
+                snapshot.get("source_data_timestamp"),
+                snapshot.get("calculated_at", datetime.now().isoformat()),
+                snapshot.get("rule_version", "v1.0"),
+                snapshot.get("data_health", "HEALTHY"),
+                json.dumps(snapshot.get("raw_details", {})),
+                1 if snapshot.get("is_corrected") else 0,
+            ))
+        return snapshot["snapshot_id"]
+
+    def get_daily_bias_snapshot(
+        self, symbol: str, trading_date: str, rule_version: str = "v1.0"
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieves daily bias snapshot for symbol and date."""
+        with self.get_connection() as conn:
+            row = conn.execute("""
+                SELECT * FROM daily_bias_snapshots
+                WHERE symbol = ? AND trading_date = ? AND rule_version = ?
+                ORDER BY is_corrected DESC, created_at DESC LIMIT 1
+            """, (symbol.upper(), trading_date, rule_version)).fetchone()
+            if row:
+                d = dict(row)
+                if d.get("raw_details_json"):
+                    try:
+                        d["raw_details"] = json.loads(d["raw_details_json"])
+                    except Exception:
+                        d["raw_details"] = {}
+                return d
+            return None
+
+    def get_all_daily_bias_snapshots(self, trading_date: str, rule_version: str = "v1.0") -> List[Dict[str, Any]]:
+        """Retrieves all daily bias snapshots for a given trading session."""
+        with self.get_connection() as conn:
+            rows = conn.execute("""
+                SELECT * FROM daily_bias_snapshots
+                WHERE trading_date = ? AND rule_version = ?
+                ORDER BY symbol ASC
+            """, (trading_date, rule_version)).fetchall()
+            return [dict(r) for r in rows]
+
+    # -------------------------------------------------------------
+    # Liquidity Context Repository Methods
+    # -------------------------------------------------------------
+    def save_liquidity_context_event(self, event: Dict[str, Any]) -> str:
+        """Persists liquidity context event (sweep, pivot state)."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO liquidity_context_events (
+                    event_id, symbol, security_id, timeframe_minutes,
+                    pivot_type, level_price, breach_bar_time, confirmation_time,
+                    reclaim_bars, sweep_direction, sweep_extreme,
+                    status, expiry_time, invalidation_time, rule_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    status = excluded.status,
+                    invalidation_time = excluded.invalidation_time;
+            """, (
+                event["event_id"],
+                event["symbol"],
+                str(event.get("security_id", "")),
+                int(event.get("timeframe_minutes", 60)),
+                event["pivot_type"],
+                float(event["level_price"]),
+                event["breach_bar_time"],
+                event["confirmation_time"],
+                int(event["reclaim_bars"]),
+                event["sweep_direction"],
+                float(event["sweep_extreme"]),
+                event.get("status", "ACTIVE"),
+                event["expiry_time"],
+                event.get("invalidation_time"),
+                event.get("rule_version", "v1.0"),
+            ))
+        return event["event_id"]
+
+    def get_active_liquidity_context(self, symbol: str, current_time: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieves active (unexpired, not invalidated) context events for a symbol."""
+        with self.get_connection() as conn:
+            sql = """
+                SELECT * FROM liquidity_context_events
+                WHERE symbol = ? AND status = 'ACTIVE'
+            """
+            params = [symbol.upper()]
+            if current_time:
+                sql += " AND expiry_time > ?"
+                params.append(current_time)
+            sql += " ORDER BY confirmation_time DESC"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_liquidity_context_status(
+        self, event_id: str, status: str, invalidation_time: Optional[str] = None
+    ) -> None:
+        """Updates the status of a context event (e.g. INVALIDATED, EXPIRED, CONSUMED)."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                UPDATE liquidity_context_events
+                SET status = ?, invalidation_time = COALESCE(?, invalidation_time)
+                WHERE event_id = ?
+            """, (status, invalidation_time, event_id))
+
+    # -------------------------------------------------------------
+    # Bias Gate Decisions Repository Methods
+    # -------------------------------------------------------------
+    def save_bias_gate_decision(self, decision: Dict[str, Any]) -> str:
+        """Persists an auditable bias gate decision."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO bias_gate_decisions (
+                    decision_id, candidate_id, symbol, security_id,
+                    trade_date, candidate_direction, gate_mode, decision,
+                    would_allow, is_allowed, daily_bias_snapshot_id,
+                    liquidity_context_event_id, reason_code, timestamp, rule_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(decision_id) DO UPDATE SET
+                    decision = excluded.decision,
+                    is_allowed = excluded.is_allowed;
+            """, (
+                decision["decision_id"],
+                decision["candidate_id"],
+                decision["symbol"],
+                str(decision.get("security_id", "")),
+                decision["trade_date"],
+                decision["candidate_direction"],
+                decision["gate_mode"],
+                decision["decision"],
+                1 if decision.get("would_allow") else 0,
+                1 if decision.get("is_allowed") else 0,
+                decision.get("daily_bias_snapshot_id"),
+                decision.get("liquidity_context_event_id"),
+                decision["reason_code"],
+                decision.get("timestamp", datetime.now().isoformat()),
+                decision.get("rule_version", "v1.0"),
+            ))
+        return decision["decision_id"]
+
+    def get_bias_gate_decisions_for_date(self, trade_date: str) -> List[Dict[str, Any]]:
+        """Retrieves all gate decisions made on a specific date for reporting."""
+        with self.get_connection() as conn:
+            rows = conn.execute("""
+                SELECT * FROM bias_gate_decisions
+                WHERE trade_date = ?
+                ORDER BY timestamp ASC
+            """, (trade_date,)).fetchall()
+            return [dict(r) for r in rows]
+
+    # -------------------------------------------------------------
+    # Trend Sweep FVG Setups Repository Methods
+    # -------------------------------------------------------------
+    def save_trend_sweep_setup(self, setup: Dict[str, Any]) -> str:
+        """Persists or updates an auditable Trend Sweep FVG V1 setup."""
+        sig_id = setup["signal_id"]
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO trend_sweep_setups (
+                    signal_id, symbol, security_id, strategy_version, direction,
+                    status, detected_at, known_at, trade_date,
+                    impulse_high, impulse_low, fib_retracement_min, fib_retracement_max,
+                    poi_id, poi_type, poi_high, poi_low,
+                    swept_level, sweep_extreme, reclaim_time, pre_breach_structure_ref,
+                    displacement_bar_time, fvg_id, fvg_top, fvg_bottom,
+                    planned_entry, initial_stop, target_price,
+                    nominal_rr, net_rr, heuristic_score, score_breakdown_json,
+                    rejection_reason, exit_version, filled_price, filled_time,
+                    exit_price, exit_time, exit_reason, realized_pnl, realized_r,
+                    quantity, raw_setup_json, created_at, updated_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                ON CONFLICT(signal_id) DO UPDATE SET
+                    status = excluded.status,
+                    filled_price = COALESCE(excluded.filled_price, trend_sweep_setups.filled_price),
+                    filled_time = COALESCE(excluded.filled_time, trend_sweep_setups.filled_time),
+                    exit_price = COALESCE(excluded.exit_price, trend_sweep_setups.exit_price),
+                    exit_time = COALESCE(excluded.exit_time, trend_sweep_setups.exit_time),
+                    exit_reason = COALESCE(excluded.exit_reason, trend_sweep_setups.exit_reason),
+                    realized_pnl = COALESCE(excluded.realized_pnl, trend_sweep_setups.realized_pnl),
+                    realized_r = COALESCE(excluded.realized_r, trend_sweep_setups.realized_r),
+                    rejection_reason = COALESCE(excluded.rejection_reason, trend_sweep_setups.rejection_reason),
+                    raw_setup_json = excluded.raw_setup_json,
+                    updated_at = CURRENT_TIMESTAMP;
+            """, (
+                sig_id,
+                setup["symbol"],
+                str(setup.get("security_id", "")),
+                setup.get("strategy_version", "TREND_SWEEP_FVG_V1"),
+                setup["direction"],
+                setup["status"],
+                setup.get("detected_at"),
+                setup.get("known_at"),
+                setup["trade_date"],
+                setup.get("impulse_high"),
+                setup.get("impulse_low"),
+                setup.get("fib_retracement_min"),
+                setup.get("fib_retracement_max"),
+                setup.get("poi_id"),
+                setup.get("poi_type"),
+                setup.get("poi_high"),
+                setup.get("poi_low"),
+                setup.get("swept_level"),
+                setup.get("sweep_extreme"),
+                setup.get("reclaim_time"),
+                setup.get("pre_breach_structure_ref"),
+                setup.get("displacement_bar_time"),
+                setup.get("fvg_id"),
+                setup.get("fvg_top"),
+                setup.get("fvg_bottom"),
+                setup.get("planned_entry"),
+                setup.get("initial_stop"),
+                setup.get("target_price"),
+                setup.get("nominal_rr"),
+                setup.get("net_rr"),
+                setup.get("heuristic_score"),
+                json.dumps(setup.get("score_breakdown", {})) if isinstance(setup.get("score_breakdown"), dict) else setup.get("score_breakdown_json"),
+                setup.get("rejection_reason"),
+                setup.get("exit_version"),
+                setup.get("filled_price"),
+                setup.get("filled_time"),
+                setup.get("exit_price"),
+                setup.get("exit_time"),
+                setup.get("exit_reason"),
+                setup.get("realized_pnl"),
+                setup.get("realized_r"),
+                setup.get("quantity"),
+                json.dumps(setup) if not isinstance(setup.get("raw_setup_json"), str) else setup.get("raw_setup_json"),
+            ))
+        return sig_id
+
+    def update_trend_sweep_setup(self, signal_id: str, updates: Dict[str, Any]) -> None:
+        """Updates specific fields of an existing trend sweep setup."""
+        if not updates:
+            return
+        fields = []
+        params = []
+        for k, v in updates.items():
+            fields.append(f"{k} = ?")
+            if isinstance(v, (dict, list)):
+                params.append(json.dumps(v))
+            else:
+                params.append(v)
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(signal_id)
+        sql = f"UPDATE trend_sweep_setups SET {', '.join(fields)} WHERE signal_id = ?"
+        with self.get_connection() as conn:
+            conn.execute(sql, tuple(params))
+
+    def get_trend_sweep_setup(self, signal_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a single trend sweep setup by signal ID."""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM trend_sweep_setups WHERE signal_id = ?",
+                (signal_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_trend_sweep_setups(
+        self,
+        trade_date: Optional[str] = None,
+        symbol: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Queries trend sweep setups with optional filters."""
+        with self.get_connection() as conn:
+            clauses = []
+            params = []
+            if trade_date:
+                clauses.append("trade_date = ?")
+                params.append(trade_date)
+            if symbol:
+                clauses.append("symbol = ?")
+                params.append(symbol.upper())
+            if status:
+                clauses.append("status = ?")
+                params.append(status)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            sql = f"SELECT * FROM trend_sweep_setups {where} ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(r) for r in rows]
+
 
 db = Database()
+
 

@@ -1,0 +1,124 @@
+{
+  "dates_evaluated": [
+    "2026-09-24",
+    "2026-09-25",
+    "2026-09-28",
+    "2026-09-29",
+    "2026-09-30",
+    "2026-10-01",
+    "2026-10-05",
+    "2026-10-06"
+  ],
+  "metrics_a": {
+    "model_name": "Model A (Baseline ORB)",
+    "total_setups": 8,
+    "executed_trades": 8,
+    "blocked_trades": 0,
+    "wins": 5,
+    "losses": 3,
+    "eod_exits": 0,
+    "win_rate": 62.5,
+    "win_rate_ci_lower": 30.57,
+    "win_rate_ci_upper": 86.32,
+    "gross_pnl_points": 205.0,
+    "net_pnl_points": 3.56,
+    "profit_factor": 1.02,
+    "max_drawdown_points": 90.49,
+    "expectancy_per_trade": 0.45,
+    "avoided_losses": 0,
+    "missed_winners": 0
+  },
+  "metrics_b": {
+    "model_name": "Model B (Baseline + Daily Bias)",
+    "total_setups": 8,
+    "executed_trades": 5,
+    "blocked_trades": 3,
+    "wins": 3,
+    "losses": 2,
+    "eod_exits": 0,
+    "win_rate": 60.0,
+    "win_rate_ci_lower": 23.07,
+    "win_rate_ci_upper": 88.24,
+    "gross_pnl_points": 115.0,
+    "net_pnl_points": -10.96,
+    "profit_factor": 0.92,
+    "max_drawdown_points": 90.49,
+    "expectancy_per_trade": -2.19,
+    "avoided_losses": 1,
+    "missed_winners": 2
+  },
+  "metrics_c": {
+    "model_name": "Model C (Baseline + Daily + Intraday Context)",
+    "total_setups": 8,
+    "executed_trades": 3,
+    "blocked_trades": 5,
+    "wins": 3,
+    "losses": 0,
+    "eod_exits": 0,
+    "win_rate": 100.0,
+    "win_rate_ci_lower": 43.85,
+    "win_rate_ci_upper": 100.0,
+    "gross_pnl_points": 195.0,
+    "net_pnl_points": 119.41,
+    "profit_factor": 999.0,
+    "max_drawdown_points": 0.0,
+    "expectancy_per_trade": 39.8,
+    "avoided_losses": 3,
+    "missed_winners": 2
+  },
+  "direction_diagnostics": {
+    "sample_size": 8,
+    "correct_predictions": 4,
+    "accuracy_percent": 50.0,
+    "details": [
+      {
+        "date": "2026-09-24",
+        "daily_bias": "BULLISH",
+        "session_actual": "BEARISH",
+        "aligned": false
+      },
+      {
+        "date": "2026-09-25",
+        "daily_bias": "BEARISH",
+        "session_actual": "BEARISH",
+        "aligned": true
+      },
+      {
+        "date": "2026-09-28",
+        "daily_bias": "BEARISH",
+        "session_actual": "BEARISH",
+        "aligned": true
+      },
+      {
+        "date": "2026-09-29",
+        "daily_bias": "NEUTRAL",
+        "session_actual": "BULLISH",
+        "aligned": false
+      },
+      {
+        "date": "2026-09-30",
+        "daily_bias": "BULLISH",
+        "session_actual": "BULLISH",
+        "aligned": true
+      },
+      {
+        "date": "2026-10-01",
+        "daily_bias": "BULLISH",
+        "session_actual": "BEARISH",
+        "aligned": false
+      },
+      {
+        "date": "2026-10-05",
+        "daily_bias": "BEARISH",
+        "session_actual": "BEARISH",
+        "aligned": true
+      },
+      {
+        "date": "2026-10-06",
+        "daily_bias": "BEARISH",
+        "session_actual": "BULLISH",
+        "aligned": false
+      }
+    ]
+  }
+}

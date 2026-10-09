@@ -1,12 +1,13 @@
 """
 Opening Range Breakout (ORB) Strategy Engine.
 
-Implements exact ORB rules matching TradingView parity:
-- 09:15:00 to 09:30:00 Opening Range calculation
-- Closed 5-minute candle breakout checks only after 09:30:00
-- Opposite OR / Midpoint / Fixed% Stop Loss and Configurable R:R Target
-- Per-symbol daily signal limits and strict idempotency
-- Full debug comparison mode for TradingView validation
+Implements canonical institutional ORB specification:
+- 09:30:00 to 10:00:00 Opening Range calculation (pre-09:30 ignored)
+- Range strictly freezes and finalizes at 10:00:00 IST
+- Confirmation requires a subsequent completed 15-minute candle closing outside range
+- Earliest possible confirmation signal: 10:15:00 IST
+- Fixed Stop Loss (opposite OR level or midpoint) and 1:2 R:R Target
+- Strict per-symbol daily signal limits, idempotency, and anti-lookahead chronological processing
 """
 
 from __future__ import annotations
@@ -30,10 +31,10 @@ class ORBStrategy:
         # Daily state: trade_date -> security_id -> ORBLevels
         self.daily_orb: Dict[date, Dict[str, ORBLevels]] = {}
 
-        # Tracking 1m candles during opening range: (trade_date, security_id) -> List[Candle]
+        # Tracking 1m/5m/15m candles during opening range: (trade_date, security_id) -> List[Candle]
         self.orb_candles_buffer: Dict[Tuple[date, str], List[Candle]] = {}
 
-        # Previous closed 5m candle: (trade_date, security_id) -> Candle
+        # Previous closed candle: (trade_date, security_id) -> Candle
         self.prev_closed_5m: Dict[Tuple[date, str], Candle] = {}
 
         # Daily signals count: (trade_date, security_id) -> int
@@ -56,20 +57,38 @@ class ORBStrategy:
 
     def register_orb_candle(self, candle: Candle) -> Optional[ORBLevels]:
         """
-        Registers candles (1m or 5m) falling inside the 09:15:00 - 09:30:00 opening window.
-        Returns the finalized ORBLevels once the opening range completes.
+        Registers candles falling inside the canonical 09:30:00 - 10:00:00 benchmark opening window.
+        Returns the finalized ORBLevels once the opening range completes at 10:00:00 IST.
         """
         c_time = default_session.localize(candle.timestamp)
         t_date = c_time.date()
         sec_id = candle.security_id
 
-        # Only process if strictly within 09:15:00 to 09:30:00
+        # 1. Strict Range Freeze: If range is already finalized, it is 100% immutable
+        # Reject late, duplicate, or out-of-order candle mutations!
+        existing = self.get_orb_levels(t_date, sec_id)
+        if existing is not None and getattr(existing, "is_complete", False):
+            logger.debug(
+                f"[ORB Freeze] Range for {candle.symbol} on {t_date} already finalized (is_complete=True). "
+                f"Rejecting late/duplicate/out-of-order candle mutation."
+            )
+            return existing
+
+        # 2. Only process if strictly within canonical 09:30:00 to 10:00:00
         if not default_session.is_orb_period(c_time):
-            return self.get_orb_levels(t_date, sec_id)
+            return existing
 
         key = (t_date, sec_id)
+
         if key not in self.orb_candles_buffer:
             self.orb_candles_buffer[key] = []
+
+        # Deduplication guard: ignore duplicate candle timestamps
+        existing_ts = {c.timestamp for c in self.orb_candles_buffer[key]}
+        if candle.timestamp in existing_ts:
+            logger.debug(f"[ORB Deduplication] Ignoring duplicate candle timestamp {candle.timestamp} for {candle.symbol}")
+            return self.daily_orb.get(t_date, {}).get(sec_id)
+
         self.orb_candles_buffer[key].append(candle)
         # Keep track of last closed candle during ORB window so first post-10:00 candle can evaluate immediately
         self.prev_closed_5m[key] = candle
@@ -78,7 +97,6 @@ class ORBStrategy:
         if t_date not in self.daily_orb:
             self.daily_orb[t_date] = {}
 
-        existing = self.daily_orb[t_date].get(sec_id)
         if existing is None:
             orb = ORBLevels(
                 trade_date=t_date,
@@ -99,6 +117,10 @@ class ORBStrategy:
 
     def finalize_orb_levels(self, trade_date: date, security_id: str, symbol: str) -> Optional[ORBLevels]:
         """Marks the ORB levels as finalized and persists them."""
+        # Immutability guard: once finalized, never mutate or recalculate
+        existing = self.get_orb_levels(trade_date, security_id)
+        if existing is not None and getattr(existing, "is_complete", False):
+            return existing
         key = (trade_date, security_id)
         candles = self.orb_candles_buffer.get(key, [])
 
@@ -399,6 +421,45 @@ class ORBStrategy:
 
         if signal_dir is None:
             return None
+
+        # Solid Breakout Candle Quality Guard (Reject Dojis, Weak Bodies, and Long-Wick Rejections)
+        candle_range = candle.high - candle.low
+        if candle_range > 0:
+            body_size = abs(candle.close - candle.open)
+            body_ratio = body_size / candle_range
+
+            # 1. Reject dojis and weak indecision bars (body must be at least 50% of total bar range)
+            if body_ratio < 0.50:
+                logger.info(
+                    f"[Candle Quality] Skipped {signal_dir.value} breakout for {symbol}: "
+                    f"Weak body ratio {body_ratio:.1%} < 50.0% (Doji/Indecision candle)"
+                )
+                return None
+
+            # 2. Reject candles with severe rejection wicks opposing the breakout
+            if signal_dir == Direction.LONG:
+                if candle.close < candle.open:
+                    logger.info(f"[Candle Quality] Skipped LONG breakout for {symbol}: Bearish candle (close < open)")
+                    return None
+                upper_wick = candle.high - candle.close
+                if (upper_wick / candle_range) > 0.35:
+                    logger.info(
+                        f"[Candle Quality] Skipped LONG breakout for {symbol}: "
+                        f"Excessive upper rejection wick {(upper_wick / candle_range):.1%} > 35%"
+                    )
+                    return None
+
+            elif signal_dir == Direction.SHORT:
+                if candle.close > candle.open:
+                    logger.info(f"[Candle Quality] Skipped SHORT breakdown for {symbol}: Bullish candle (close > open)")
+                    return None
+                lower_wick = candle.close - candle.low
+                if (lower_wick / candle_range) > 0.35:
+                    logger.info(
+                        f"[Candle Quality] Skipped SHORT breakdown for {symbol}: "
+                        f"Excessive lower rejection wick {(lower_wick / candle_range):.1%} > 35%"
+                    )
+                    return None
 
         # Filter check
         if not self._passes_optional_filters(candle, signal_dir, orb, history):

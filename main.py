@@ -17,6 +17,7 @@ from datetime import datetime, date, time, timedelta
 import signal
 import sys
 from typing import List, Optional
+import httpx
 import zoneinfo
 
 # Ensure Windows terminal can print UTF-8 without charmap errors
@@ -50,6 +51,7 @@ class LiveEngine:
             on_target_hit=self._on_target_hit,
             on_stop_hit=self._on_stop_hit,
             on_eod_squareoff=self._on_eod_squareoff,
+            on_milestone_hit=self._on_milestone_hit,
         )
         self.candle_builder = CandleBuilder(
             on_1m_candle_closed=self._on_1m_candle_closed,
@@ -74,6 +76,20 @@ class LiveEngine:
         """Triggered whenever a 1-minute candle finalizes."""
         # Update existing open paper trades
         self.paper_tracker.update_with_candle(candle)
+
+        # 09:16 AM Opening Momentum Scalp (fires when 09:15-09:16 candle closes)
+        c_time = default_session.localize(candle.timestamp)
+        if c_time.hour == 9 and c_time.minute == 16:
+            try:
+                from app.trading.fast_scalp import fast_scalp_engine
+                async def _run_0916_scalp():
+                    s = await fast_scalp_engine.evaluate_0916_scalp(candle, c_time.date())
+                    if s:
+                        await fast_scalp_engine.broadcast_0916_scalp_alert(s)
+                        logger.info(f"Dispatched 09:16 AM Opening Momentum Scalp for {s.contract_symbol} ({s.direction.value}).")
+                asyncio.create_task(_run_0916_scalp())
+            except Exception as e:
+                logger.debug(f"09:16 scalp evaluation note: {e}")
 
     def _on_5m_candle_closed(self, candle: Candle) -> None:
         """Triggered whenever a 5-minute candle finalizes."""
@@ -114,12 +130,115 @@ class LiveEngine:
             if signal:
                 self._handle_signal(signal, candle)
 
+        # 3. 60-Minute Liquidity Context Bar Completion (Section 7)
+        if c_time.minute == 15 and c_time.hour in (10, 11, 12, 13, 14, 15):
+            try:
+                from app.analysis.liquidity_context import liquidity_context_engine, Bar60m, ContextDirection
+                start_dt = c_time - timedelta(hours=1)
+                with db.get_connection() as conn:
+                    rows = conn.execute(
+                        "SELECT open, high, low, close, volume FROM candles_15m WHERE security_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
+                        (str(candle.security_id), start_dt.isoformat(), c_time.isoformat())
+                    ).fetchall()
+                if rows and len(rows) >= 2:
+                    bar60 = Bar60m(
+                        bar_id=f"{candle.symbol}_{start_dt.strftime('%Y%m%d%H%M')}",
+                        symbol=candle.symbol,
+                        security_id=candle.security_id,
+                        start_time=start_dt,
+                        end_time=c_time,
+                        open=float(rows[0]["open"]),
+                        high=max(float(r["high"]) for r in rows),
+                        low=min(float(r["low"]) for r in rows),
+                        close=float(rows[-1]["close"]),
+                        volume=sum(float(r["volume"]) for r in rows),
+                    )
+                    prev_ctx = liquidity_context_engine.get_current_context(candle.symbol, start_dt)
+                    new_ctx = liquidity_context_engine.add_60m_bar(bar60)
+                    if new_ctx.direction != prev_ctx.direction and new_ctx.direction in (ContextDirection.BULLISH, ContextDirection.BEARISH, ContextDirection.CONFLICT):
+                        paused_resumed = "PAUSED (Conflict)" if new_ctx.direction == ContextDirection.CONFLICT else f"ACTIVE ({new_ctx.direction.value})"
+                        asyncio.create_task(
+                            notifier.send_entry_permission_update(
+                                symbol=candle.symbol,
+                                morning_bias="ACTIVE",
+                                context_and_level=f"{new_ctx.direction.value} Sweep",
+                                paused_or_resumed=paused_resumed,
+                                reason=new_ctx.reason,
+                                event_id=new_ctx.active_events[0].event_id if new_ctx.active_events else "EVT",
+                            )
+                        )
+            except Exception as e:
+                logger.debug(f"60m bar aggregation note for {candle.symbol}: {e}")
+
     def _handle_signal(self, sig: Signal, candle: Optional[Candle] = None) -> None:
         """Schedules async multi-confluence verification and signal dispatch."""
         asyncio.create_task(self._process_signal_async(sig, candle))
 
     async def _process_signal_async(self, sig: Signal, candle: Optional[Candle] = None) -> None:
-        """Processes a new ORB breakout with ML conviction & Pivot/OI Confluence verification."""
+        """Processes a new ORB breakout through Daily Bias Gate, ML conviction & Confluence verification."""
+        # 0. Daily Bias and Intraday Liquidity Context Gate (Sections 6, 7 & 9)
+        try:
+            from app.analysis.daily_bias import daily_bias_engine, DailyBiasSnapshot, BiasDirection, BiasReasonCode
+            from app.analysis.liquidity_context import liquidity_context_engine
+            from app.trading.bias_gate import bias_gate_engine
+
+            today_date = sig.trade_date
+            daily_snap_dict = db.get_daily_bias_snapshot(sig.symbol, today_date.isoformat(), settings.bias_rule_version)
+            if not daily_snap_dict:
+                daily_snap = daily_bias_engine.get_or_compute_snapshot(
+                    symbol=sig.symbol,
+                    security_id=sig.security_id,
+                    trading_date=today_date,
+                )
+            else:
+                daily_snap = DailyBiasSnapshot(
+                    snapshot_id=daily_snap_dict["snapshot_id"],
+                    symbol=daily_snap_dict["symbol"],
+                    security_id=str(daily_snap_dict["security_id"]),
+                    exchange=daily_snap_dict.get("exchange", "NSE"),
+                    trading_date=daily_snap_dict["trading_date"],
+                    previous_session_date=daily_snap_dict["previous_session_date"],
+                    reference_session_date=daily_snap_dict["reference_session_date"],
+                    previous_close=float(daily_snap_dict["previous_close"]),
+                    reference_high=float(daily_snap_dict["reference_high"]),
+                    reference_low=float(daily_snap_dict["reference_low"]),
+                    daily_bias=BiasDirection(daily_snap_dict["daily_bias"]),
+                    reason_code=BiasReasonCode(daily_snap_dict["reason_code"]),
+                    source_data_timestamp=daily_snap_dict.get("source_data_timestamp"),
+                    rule_version=daily_snap_dict.get("rule_version", settings.bias_rule_version),
+                    data_health=daily_snap_dict.get("data_health", "HEALTHY"),
+                )
+
+            ctx_snap = liquidity_context_engine.get_current_context(sig.symbol, default_session.now())
+
+            bias_decision = bias_gate_engine.evaluate_candidate(
+                candidate_id=sig.idempotency_key,
+                symbol=sig.symbol,
+                security_id=sig.security_id,
+                trade_date=today_date.isoformat(),
+                candidate_direction=sig.direction,
+                daily_snapshot=daily_snap,
+                liquidity_snapshot=ctx_snap,
+                persist=True,
+            )
+
+            if not bias_decision.is_allowed:
+                logger.warning(
+                    f"[Bias Gate VETO] Blocked {sig.symbol} {sig.direction.value} breakout: "
+                    f"Decision={bias_decision.decision.value}, Mode={bias_decision.gate_mode}, "
+                    f"DailyBias={bias_decision.daily_bias}, Context={bias_decision.context_direction}, "
+                    f"Reason={bias_decision.reason_code}"
+                )
+                return
+            else:
+                logger.info(
+                    f"[Bias Gate PASS] {sig.symbol} {sig.direction.value} permitted: "
+                    f"Decision={bias_decision.decision.value}, Mode={bias_decision.gate_mode}, "
+                    f"WouldAllow={bias_decision.would_allow}"
+                )
+        except Exception as e:
+            logger.error(f"Error in Bias Gate candidate evaluation for {sig.symbol}: {e}")
+
         is_index = sig.symbol in ("NIFTY", "BANKNIFTY", "SENSEX", "NIFTY50") or str(sig.security_id) in ("13", "25", "51")
 
         # 1. AI learned conviction & false-breakout trap check:
@@ -260,6 +379,10 @@ class LiveEngine:
             except Exception as e:
                 logger.debug(f"VIP broadcast note: {e}")
 
+    def _on_milestone_hit(self, trade: PaperTrade, milestone_num: int, milestone_price: float) -> None:
+        """Callback when virtual position reaches Target 1 or Target 2 milestone."""
+        asyncio.create_task(notifier.send_milestone_hit(trade, milestone_num, milestone_price))
+
     def _on_target_hit(self, trade: PaperTrade) -> None:
         """Callback when virtual position reaches its target."""
         asyncio.create_task(notifier.send_target_hit(trade))
@@ -276,6 +399,14 @@ class LiveEngine:
         """Feeds raw tick to candle builder and checks tick-level exits."""
         self.candle_builder.process_tick(tick)
         self.paper_tracker.update_with_tick(tick.security_id, tick.ltp, tick.timestamp)
+        # Fast Scalp tick tracking (09:15 - 09:30)
+        try:
+            from app.trading.fast_scalp import fast_scalp_engine
+            active_s = fast_scalp_engine.get_active_scalp()
+            if active_s and active_s.security_id == str(tick.security_id):
+                asyncio.create_task(fast_scalp_engine.on_tick(tick.ltp))
+        except Exception:
+            pass
 
     async def recover_intraday_state(self, instruments) -> None:
         """
@@ -479,7 +610,10 @@ class LiveEngine:
         # 3. Start Telegram listener immediately so /balance, /limit, /learn respond right away
         from app.trading.order_executor import order_executor
         from app.strategies.gemini_analyzer import gemini_analyzer
+        from app.notifications.support_bot import support_bot
         approval_listener_task = asyncio.create_task(order_executor.run_telegram_listener())
+        if support_bot.is_configured:
+            support_listener_task = asyncio.create_task(support_bot.run_support_bot_listener())
 
         # 4. Load open paper trades across restarts
         today = default_session.now().date()
@@ -515,50 +649,69 @@ class LiveEngine:
             except Exception as e:
                 logger.debug(f"Startup token renewal check: {e}")
 
+            failed_attempts = 0
             while self._running:
-                await asyncio.sleep(3 * 3600)  # every 3 hours
+                # Renew every 2 hours on success, or retry every 15 minutes if an attempt failed
+                sleep_sec = (2 * 3600) if failed_attempts == 0 else 900
+                await asyncio.sleep(sleep_sec)
                 if not self._running:
                     break
                 logger.info("Triggering scheduled background Dhan token renewal...")
                 ok, msg = await auth.renew_token()
                 if ok:
+                    failed_attempts = 0
                     logger.info(f"Background token auto-renewal succeeded: {msg}")
                     await notifier.send_message(f"🔄 <b>Dhan Token Auto-Renewed</b>\n\n• {msg}")
                 else:
-                    logger.warning(f"Background token auto-renewal failed: {msg}")
-                    await notifier.send_message(
-                        f"⚠️ <b>Dhan Token Auto-Renewal Alert</b>\n\n"
-                        f"• {msg}\n"
-                        "• You can generate a new token from Dhan and paste it here directly using: <code>/token &lt;jwt&gt;</code> or simply paste the raw token."
-                    )
+                    failed_attempts += 1
+                    logger.warning(f"Background token auto-renewal attempt #{failed_attempts} failed: {msg}")
+                    if failed_attempts >= 3 or "Invalid Token" in msg:
+                        await notifier.send_message(
+                            f"⚠️ <b>Dhan Token Auto-Renewal Alert</b>\n\n"
+                            f"• {msg}\n"
+                            "• You can generate a new token from Dhan and paste it here directly using: <code>/token &lt;jwt&gt;</code> or simply paste the raw token."
+                        )
 
         renew_task = asyncio.create_task(_auto_renew_loop())
 
-        # Start 10:00 AM Daily Major Indices (Nifty 50, BankNifty, Sensex) ORB Benchmark Broadcast Loop
-        async def _indices_orb_broadcast_loop():
+        # Start 09:10 AM Pre-Market Discovery & CPR Digest Broadcast Loop
+        async def _premarket_digest_loop():
             while self._running:
                 await asyncio.sleep(20)
                 if not self._running:
                     break
                 now_t = default_session.now()
-                # On trading days between 10:00:00 and 10:05:00 IST
-                if default_session.is_trading_day(now_t.date()) and time(10, 0) <= now_t.time() < time(10, 5):
-                    idemp = f"INDICES_ORB_{now_t.strftime('%Y%m%d')}"
+                # On trading days between 09:09:00 and 09:14:00 IST
+                if default_session.is_trading_day(now_t.date()) and time(9, 9) <= now_t.time() < time(9, 14):
+                    idemp = f"PREMARKET_{now_t.strftime('%Y%m%d')}"
                     try:
-                        report_text = await order_executor.get_indices_orb_report(now_t.date())
-                        if report_text:
-                            await notifier.send_message(report_text, idempotency_key=idemp)
-                            logger.info("Dispatched 10:00 AM daily Major Indices ORB Benchmark.")
+                        from app.analysis.pre_market import pre_market_manager
+                        await pre_market_manager.generate_and_broadcast_digest(now_t.date())
+                        logger.info("Dispatched 09:10 AM Pre-Market CPR & Daily Bias Digest.")
                     except Exception as e:
-                        logger.debug(f"Error in indices broadcast loop: {e}")
+                        logger.debug(f"Error in premarket broadcast loop: {e}")
+                    await asyncio.sleep(300)
+
+        premarket_task = asyncio.create_task(_premarket_digest_loop())
+
+        # 10:00 AM Daily Major Indices Benchmark Tracking (Internal Levels Only, No Channel Spam)
+        async def _indices_orb_broadcast_loop():
+            while self._running:
+                await asyncio.sleep(60)
+                if not self._running:
+                    break
+                now_t = default_session.now()
+                # Levels are logged internally, not broadcasted to channels per user preference
+                if default_session.is_trading_day(now_t.date()) and time(10, 0) <= now_t.time() < time(10, 5):
+                    logger.info("Internal 10:00 AM Benchmark levels established. (Channel marking broadcast suppressed).")
                     await asyncio.sleep(300)
 
         indices_task = asyncio.create_task(_indices_orb_broadcast_loop())
 
-        # Start Index Breakout Watchdog (Monitors Nifty 50, BankNifty, Sensex for ORB breakouts)
+        # Start Index Breakout Watchdog (Monitors Nifty 50, BankNifty, Sensex for ORB breakouts & tracks open trades)
         async def _indices_breakout_loop():
             while self._running:
-                await asyncio.sleep(45)
+                await asyncio.sleep(15)
                 if not self._running:
                     break
                 now_t = default_session.now()
@@ -568,22 +721,43 @@ class LiveEngine:
                     except Exception as e:
                         logger.debug(f"Error checking index breakouts: {e}")
 
+                    # Monitor open index positions against live Dhan LTP
+                    if self.paper_tracker.open_trades:
+                        try:
+                            import httpx
+                            from app.dhan.auth import auth
+                            headers = auth.get_headers()
+                            async with httpx.AsyncClient(timeout=5.0) as client:
+                                r_ltp = await client.post("https://api.dhan.co/v2/marketfeed/ltp", headers=headers, json={"IDX_I": [13, 25, 51]})
+                                if r_ltp.status_code == 200:
+                                    d_data = r_ltp.json().get("data", {}).get("IDX_I", {})
+                                    for sid_s, val in d_data.items():
+                                        ltp = float(val.get("last_price", 0.0))
+                                        if ltp > 0:
+                                            self.paper_tracker.update_with_tick(sid_s, ltp, now_t)
+                        except Exception as e:
+                            logger.debug(f"Error updating open index trades with live tick: {e}")
+
         index_breakout_task = asyncio.create_task(_indices_breakout_loop())
 
-        # Start Equity Breakout Watchdog (Monitors F&O Universe for 15m ORB breakouts)
-        async def _equity_breakout_loop():
-            while self._running:
-                await asyncio.sleep(60)
-                if not self._running:
-                    break
-                now_t = default_session.now()
-                if default_session.is_market_open(now_t) and default_session.is_entry_allowed(now_t):
-                    try:
-                        await order_executor.check_equity_breakouts(self._on_signal_generated)
-                    except Exception as e:
-                        logger.debug(f"Error checking equity breakouts: {e}")
+        # Start Equity Breakout Watchdog (Only active if universe mode is not indices_only)
+        equity_breakout_task = None
+        if settings.universe.mode.lower() not in ("indices_only", "indices"):
+            async def _equity_breakout_loop():
+                while self._running:
+                    await asyncio.sleep(60)
+                    if not self._running:
+                        break
+                    now_t = default_session.now()
+                    if default_session.is_market_open(now_t) and default_session.is_entry_allowed(now_t):
+                        try:
+                            await order_executor.check_equity_breakouts(self._on_signal_generated)
+                        except Exception as e:
+                            logger.debug(f"Error checking equity breakouts: {e}")
 
-        equity_breakout_task = asyncio.create_task(_equity_breakout_loop())
+            equity_breakout_task = asyncio.create_task(_equity_breakout_loop())
+        else:
+            logger.info("Universe mode is indices_only: Equity stock breakout watchdog disabled.")
 
         # Start hourly Telegram 24h auto-delete cleanup loop
         async def _telegram_cleanup_loop():
@@ -630,8 +804,11 @@ class LiveEngine:
         async def _daily_schedule_watchdog():
             sent_pulse_day = None
             sent_health_day = None
+            sent_bias_day = None
+            sent_scalp_day = None
             sent_briefing_day = None
             deleted_greeting_day = None
+            sent_choppy_day = None
             sent_evening_day = None
             sent_night_day = None
 
@@ -677,6 +854,65 @@ class LiveEngine:
                         except Exception as e:
                             logger.debug(f"VIP expiry audit note: {e}")
 
+                    # 2.5. 09:05 AM Daily Bias Snapshot & Digest Broadcast (Sections 6 & 13)
+                    if time(9, 5) <= cur_time < time(9, 12) and sent_bias_day != c_date:
+                        try:
+                            from app.analysis.daily_bias import daily_bias_engine
+
+                            prior_days = default_session.get_previous_trading_days(c_date, count=2)
+                            if len(prior_days) == 2:
+                                d_prev, d_ref = prior_days[0], prior_days[1]
+
+                                # 1. Compute benchmark index (NIFTY 50)
+                                nifty_c_prev = await historical_manager.fetch_daily_candle("13", "NIFTY", d_prev)
+                                nifty_c_ref = await historical_manager.fetch_daily_candle("13", "NIFTY", d_ref)
+                                nifty_snap = daily_bias_engine.compute_and_persist(
+                                    symbol="NIFTY",
+                                    security_id="13",
+                                    trading_date=c_date,
+                                    previous_candle=nifty_c_prev,
+                                    reference_candle=nifty_c_ref,
+                                )
+
+                                # 2. Daily Bias calculated for internal gating (channel broadcast suppressed per pure trade alert policy)
+                                logger.info(f"09:05 AM Daily Bias snapshot generated for NIFTY ({nifty_snap.daily_bias.value}) for internal gating.")
+
+                                # 3. Pre-warm daily bias snapshots for universe instruments in background
+                                async def _warm_stock(inst):
+                                    try:
+                                        c_p = await historical_manager.fetch_daily_candle(inst.security_id, inst.symbol, d_prev)
+                                        c_r = await historical_manager.fetch_daily_candle(inst.security_id, inst.symbol, d_ref)
+                                        daily_bias_engine.compute_and_persist(
+                                            symbol=inst.symbol,
+                                            security_id=inst.security_id,
+                                            trading_date=c_date,
+                                            previous_candle=c_p,
+                                            reference_candle=c_r,
+                                        )
+                                    except Exception as e:
+                                        logger.debug(f"Pre-warm bias note for {inst.symbol}: {e}")
+
+                                asyncio.create_task(asyncio.gather(*[_warm_stock(inst) for inst in instruments[:50]]))
+
+                            sent_bias_day = c_date
+                        except Exception as e:
+                            logger.error(f"Error in 09:05 Daily Bias snapshot job: {e}")
+
+                    # 2.8. 09:12 AM Fast Scalp Pre-Market Trade Alert (Public & VIP Channels)
+                    if time(9, 11) <= cur_time < time(9, 14) and sent_scalp_day != c_date:
+                        try:
+                            from app.trading.fast_scalp import fast_scalp_engine
+                            setup = await fast_scalp_engine.evaluate_premarket_scalp(c_date)
+                            if setup:
+                                await fast_scalp_engine.broadcast_premarket_scalp_alert(setup)
+                                logger.info(f"Dispatched 09:12 AM Fast Scalp alert for {setup.contract_symbol} ({setup.direction.value}).")
+                            else:
+                                await fast_scalp_engine.broadcast_no_trade_advisory(c_date)
+                                logger.info("Dispatched 09:12 AM Fast Scalp Capital Protection Advisory (Flat / Choppy Open).")
+                            sent_scalp_day = c_date
+                        except Exception as e:
+                            logger.error(f"Error evaluating 09:12 AM premarket fast scalp: {e}")
+
                     # 3. 09:14 AM Pre-Market Final Briefing
                     if time(9, 14) <= cur_time < time(9, 15) and sent_briefing_day != c_date:
                         try:
@@ -697,6 +933,15 @@ class LiveEngine:
                         except Exception as e:
                             logger.debug(f"Error deleting morning greeting: {e}")
 
+                    # 4.5. 12:45 PM - 13:00 PM Midday Zuperior Crypto/Forex Global Desk Launch Promo
+                    if time(12, 45) <= cur_time < time(13, 0) and sent_choppy_day != c_date:
+                        try:
+                            await notifier.send_zuperior_promo(slot="midday")
+                            sent_choppy_day = c_date
+                            logger.info("Dispatched 12:45 PM Zuperior Crypto & Forex Desk Launch promo.")
+                        except Exception as e:
+                            logger.debug(f"Error in midday promo broadcast: {e}")
+
                     # 5. 18:00 PM Evening P&L Showcase
                     if time(18, 0) <= cur_time < time(18, 10) and sent_evening_day != c_date:
                         try:
@@ -705,6 +950,15 @@ class LiveEngine:
                             logger.info("Dispatched 18:00 PM Evening P&L Showcase.")
                         except Exception as e:
                             logger.debug(f"Error sending evening showcase: {e}")
+
+                    # 5.5. 21:15 PM - 21:30 PM Night Crypto & Forex Prime Session Promo
+                    if time(21, 15) <= cur_time < time(21, 30) and getattr(self, "_sent_night_promo_day", None) != c_date:
+                        try:
+                            await notifier.send_zuperior_promo(slot="night")
+                            self._sent_night_promo_day = c_date
+                            logger.info("Dispatched 21:15 PM Night Crypto & Forex Prime Session promo.")
+                        except Exception as e:
+                            logger.debug(f"Error in night promo broadcast: {e}")
 
                     # 6. 22:00 PM Night Market Plan
                     if time(22, 0) <= cur_time < time(22, 10) and sent_night_day != c_date:
@@ -970,6 +1224,91 @@ async def cmd_learn(symbols: Optional[str] = None, max_stocks: int = 15) -> None
     print("\nLearning cycle completed successfully.\n")
 
 
+async def cmd_trend_sweep_replay(
+    symbol: str = "NIFTY",
+    from_date_str: Optional[str] = None,
+    to_date_str: Optional[str] = None,
+    capital: float = 50000.0,
+) -> None:
+    """Executes deterministic historical replay for TREND_SWEEP_FVG_V1 comparing FIXED_2R vs BE_TRAIL_2R."""
+    print("\n" + "=" * 65)
+    print("      TREND_SWEEP_FVG_V1 HISTORICAL REPLAY & PERFORMANCE      ")
+    print("=" * 65)
+    print(f"Symbol:             {symbol.upper()}")
+    print(f"Evaluation Capital: Rs {capital:,.2f}")
+    print(f"Risk per Position:  0.25% (Rs {capital * 0.0025:,.2f})")
+    print(f"Mode:               SHADOW / DETERMINISTIC EVENT REPLAY")
+    print("-" * 65)
+
+    if not instrument_manager.is_cache_valid():
+        await instrument_manager.download_master()
+    instrument_manager.load_and_parse()
+
+    sec_id = instrument_manager.get_security_id(symbol.upper()) or "13"
+    info = instrument_manager.get_instrument_info(sec_id)
+    meta = {
+        "symbol": symbol.upper(),
+        "security_id": sec_id,
+        "lot_size": info.lot_size if info else 1,
+        "tick_size": info.tick_size if info else 0.05,
+        "product_type": "INTRADAY",
+    }
+
+    from app.backtest.trend_sweep_replay import TrendSweepReplayRunner
+    runner = TrendSweepReplayRunner(initial_capital=capital, risk_per_trade_pct=0.25)
+
+    # Fetch candles from database
+    start_d = date.fromisoformat(from_date_str) if from_date_str else (date.today() - timedelta(days=30))
+    end_d = date.fromisoformat(to_date_str) if to_date_str else date.today()
+
+    candles_5m_raw = db.get_candles_5m(sec_id, limit=2000) if hasattr(db, "get_candles_5m") else []
+    candles_15m_raw = db.get_recent_candles_15m(sec_id, limit=1000)
+    candles_60m_raw = db.get_recent_candles_60m(sec_id, limit=500)
+
+    if not candles_5m_raw or len(candles_5m_raw) < 20:
+        print(f"  [INFO] Insufficient local candles in database for {symbol}. Fetching via Dhan historical...")
+        from app.dhan.historical import historical_manager
+        trading_days = [start_d + timedelta(days=i) for i in range((end_d - start_d).days + 1) if (start_d + timedelta(days=i)).weekday() < 5]
+        for t_day in trading_days[-10:]:
+            await historical_manager.fetch_intraday_candles(sec_id, symbol, t_day, interval=1)
+        candles_15m_raw = db.get_recent_candles_15m(sec_id, limit=1000)
+        candles_60m_raw = db.get_recent_candles_60m(sec_id, limit=500)
+
+    print(f"  [OK] Loaded {len(candles_5m_raw)} 5m, {len(candles_15m_raw)} 15m, and {len(candles_60m_raw)} 60m bars.")
+
+    res = runner.run_replay(
+        symbol=symbol.upper(),
+        security_id=sec_id,
+        candles_5m=candles_5m_raw,
+        candles_15m=candles_15m_raw,
+        candles_60m=candles_60m_raw,
+        instrument_meta=meta,
+    )
+
+    fixed = res["FIXED_2R"]
+    trail = res["BE_TRAIL_2R"]
+
+    print("\n" + "=" * 65)
+    print(f"{'METRIC':<30} | {'FIXED_2R':<15} | {'BE_TRAIL_2R':<15}")
+    print("-" * 65)
+    print(f"{'Total Setups Detected':<30} | {fixed.total_setups_detected:<15} | {trail.total_setups_detected:<15}")
+    print(f"{'Armed Setups':<30} | {fixed.armed_setups:<15} | {trail.armed_setups:<15}")
+    print(f"{'Expired Setups':<30} | {fixed.expired_setups:<15} | {trail.expired_setups:<15}")
+    print(f"{'Filled Trades':<30} | {fixed.filled_trades:<15} | {trail.filled_trades:<15}")
+    print(f"{'Winning Trades':<30} | {fixed.winning_trades:<15} | {trail.winning_trades:<15}")
+    print(f"{'Losing Trades':<30} | {fixed.losing_trades:<15} | {trail.losing_trades:<15}")
+    print(f"{'Breakeven Trades':<30} | {fixed.breakeven_trades:<15} | {trail.breakeven_trades:<15}")
+    print(f"{'Target Hit Rate':<30} | {f'{fixed.target_hit_rate_pct:.1f}%':<15} | {f'{trail.target_hit_rate_pct:.1f}%':<15}")
+    print(f"{'Net Trade Win Rate':<30} | {f'{fixed.net_win_rate_pct:.1f}%':<15} | {f'{trail.net_win_rate_pct:.1f}%':<15}")
+    print(f"{'Total Regulatory Charges':<30} | {f'Rs {fixed.total_charges:,.2f}':<15} | {f'Rs {trail.total_charges:,.2f}':<15}")
+    print(f"{'Net Realized PnL':<30} | {f'Rs {fixed.net_pnl:,.2f}':<15} | {f'Rs {trail.net_pnl:,.2f}':<15}")
+    print(f"{'Profit Factor':<30} | {f'{fixed.profit_factor:.2f}':<15} | {f'{trail.profit_factor:.2f}':<15}")
+    print(f"{'Expectancy per Trade':<30} | {f'Rs {fixed.expectancy_per_trade:,.2f}':<15} | {f'Rs {trail.expectancy_per_trade:,.2f}':<15}")
+    print(f"{'Max Drawdown':<30} | {f'Rs {fixed.max_drawdown_amount:,.2f}':<15} | {f'Rs {trail.max_drawdown_amount:,.2f}':<15}")
+    print(f"{'Max Consecutive Losses':<30} | {fixed.consecutive_losses:<15} | {trail.consecutive_losses:<15}")
+    print("=" * 65 + "\n")
+
+
 def cmd_status() -> None:
     """Displays current system status, database metrics, and open positions."""
     print("\n" + "=" * 55)
@@ -979,6 +1318,7 @@ def cmd_status() -> None:
     print(f"Local IST Time:     {default_session.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Market Session:     {'OPEN' if default_session.is_market_open() else 'CLOSED'}")
     print(f"Strategy:           {settings.strategy.name} (Timeframe: {settings.strategy.signal_timeframe}m)")
+    print(f"New Strategy:       TREND_SWEEP_FVG_V1 (SHADOW / Isolated Paper)")
     print(f"Universe Mode:      {settings.universe.mode}")
     print(f"Dhan Credentials:   {'CONFIGURED' if auth.has_credentials else 'NOT SET'}")
     print(f"Telegram Bot:       {'CONFIGURED' if notifier.is_configured else 'NOT SET'}")
@@ -990,16 +1330,22 @@ def cmd_status() -> None:
             c_inst = conn.execute("SELECT COUNT(*) as c FROM instruments").fetchone()["c"]
             c_1m = conn.execute("SELECT COUNT(*) as c FROM candles_1m").fetchone()["c"]
             c_5m = conn.execute("SELECT COUNT(*) as c FROM candles_5m").fetchone()["c"]
+            c_15m = conn.execute("SELECT COUNT(*) as c FROM candles_15m").fetchone()["c"]
+            c_60m = conn.execute("SELECT COUNT(*) as c FROM candles_60m").fetchone()["c"]
             c_orb = conn.execute("SELECT COUNT(*) as c FROM orb_daily_levels").fetchone()["c"]
             c_sig = conn.execute("SELECT COUNT(*) as c FROM signals").fetchone()["c"]
             c_trades = conn.execute("SELECT COUNT(*) as c FROM paper_trades").fetchone()["c"]
             c_open = conn.execute("SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'").fetchone()["c"]
+            c_trend_sweep = conn.execute("SELECT COUNT(*) as c FROM trend_sweep_setups").fetchone()["c"]
 
         balance = db.get_account_balance(4322.0)
         print("\nDatabase Record Counts:")
         print(f"  - Cached Instruments:   {c_inst}")
         print(f"  - 1-Minute Candles:     {c_1m}")
         print(f"  - 5-Minute Candles:     {c_5m}")
+        print(f"  - 15-Minute Candles:    {c_15m}")
+        print(f"  - 60-Minute Candles:    {c_60m}")
+        print(f"  - Trend Sweep Setups:   {c_trend_sweep}")
         print(f"  - ORB Daily Levels:     {c_orb}")
         print(f"  - Breakout Signals:     {c_sig}")
         print(f"  - Total Paper Trades:   {c_trades}")
@@ -1044,6 +1390,13 @@ def main() -> None:
     bt_parser.add_argument("--compare", action="store_true", help="Compare 15m, 30m, and 60m timeframes")
     bt_parser.add_argument("--capital", type=float, default=5000.0, help="Simulated trading capital (default: 5000)")
 
+    # trend-sweep-replay
+    ts_parser = subparsers.add_parser("trend-sweep-replay", help="Run historical replay of TREND_SWEEP_FVG_V1")
+    ts_parser.add_argument("--symbol", default="NIFTY", help="Symbol to evaluate (default: NIFTY)")
+    ts_parser.add_argument("--from", "--from-date", dest="from_date", help="Start date (YYYY-MM-DD)")
+    ts_parser.add_argument("--to", "--to-date", dest="to_date", help="End date (YYYY-MM-DD)")
+    ts_parser.add_argument("--capital", type=float, default=50000.0, help="Simulated capital (default: 50000)")
+
     # learn (5-year deep learning on genuine Dhan data)
     learn_parser = subparsers.add_parser("learn", help="Run 5-year historical learning on Dhan data")
     learn_parser.add_argument("--symbols", help="Specific symbols to analyze (comma-separated)")
@@ -1079,10 +1432,20 @@ def main() -> None:
                 capital=args.capital,
             )
         )
+    elif args.command == "trend-sweep-replay":
+        asyncio.run(
+            cmd_trend_sweep_replay(
+                symbol=args.symbol,
+                from_date_str=args.from_date,
+                to_date_str=args.to_date,
+                capital=args.capital,
+            )
+        )
     elif args.command == "learn":
         asyncio.run(cmd_learn(symbols=args.symbols, max_stocks=args.max))
     elif args.command == "status":
         cmd_status()
+
 
 
 if __name__ == "__main__":
