@@ -597,10 +597,9 @@ class FastScalpEngine:
         lines = [
             "🎉🏆 <b>BOOM! TARGET ACHIEVED!</b> 🚀🎉",
             "━━━━━━━━━━━━━━━━━━━━━",
-            f"⚡ <b>{setup.contract_symbol}</b>",
+            f"⚡ <code>{setup.contract_symbol}</code>",
             f"🎯 <b>Exit:</b> ₹{current_price:,.1f} <b>(+{pts_gained} PTS GAINED!)</b> 💰",
-            f"💸 <b>Net Realized Profit:</b> <b>+₹{total_profit:,}</b> <i>({lot_str} × ₹{per_lot_profit:,}/lot)</i> 🔥",
-            f"💼 <b>Compounded Live Balance:</b> ₹{new_balance:,.2f} 📈",
+            f"💸 <b>Profit:</b> <b>+₹{total_profit:,}</b> <i>({lot_str} | +₹{per_lot_profit:,} per lot)</i> 🔥",
             "",
             "👑 <i>Low Risk, Maximum Gains! Book profits or trail SL to cost!</i> 🚀",
         ]
