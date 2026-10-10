@@ -202,10 +202,10 @@ class PreMarketManager:
         if not snapshots:
             return None
 
-        # Build elegant Telegram Message
+        # Build elegant Telegram Message for Admin Verification Desk
         lines = [
-            "🌅 <b>PRE-MARKET DAILY BIAS & CPR DIGEST</b> 📊",
-            f"📅 <b>Date:</b> {d.strftime('%d-%b-%Y')} | ⏰ <b>Discovery:</b> 09:10 AM IST",
+            "👑 <b>[INTERNAL ADMIN RESEARCH: PRE-MARKET REAL LEVELS]</b> 📊",
+            f"📅 <b>Date:</b> {d.strftime('%d-%b-%Y')} | ⏰ <b>Settled:</b> 09:08 - 09:10 AM IST",
             "━━━━━━━━━━━━━━━━━━━━━",
         ]
 
@@ -215,23 +215,25 @@ class PreMarketManager:
             strat_label = "5M Solid ORB Breakout" if s.recommended_strategy == "ORB_BREAKOUT" else "SMC Sweep & Reclaim Reversals"
 
             lines.append(f"🎯 <b>{s.symbol}</b> ({gap_icon} {s.gap_type.replace('_', ' ')})")
-            lines.append(f"• Pre-Open: ₹{s.pre_open_price:,.2f} ({s.gap_points:+,.1f} pts | {s.gap_pct:+.2f}%)")
-            lines.append(f"• Central Pivot (P): ₹{s.pivot:,.2f} | CPR Width: {s.cpr_width_pct:.2f}%")
-            lines.append(f"• Market Regime: {regime_icon} <b>{s.regime.replace('_', ' ')}</b>")
-            lines.append(f"• Active Strategy: <b>{strat_label}</b>")
+            lines.append(f"• <b>Pre-Open Discovered:</b> ₹{s.pre_open_price:,.2f} ({s.gap_points:+,.1f} pts | {s.gap_pct:+.2f}%)")
+            lines.append(f"• <b>Prev Day High (PDH):</b> ₹{s.prev_high:,.2f}")
+            lines.append(f"• <b>Prev Day Low (PDL):</b> ₹{s.prev_low:,.2f}")
+            lines.append(f"• <b>Prev Day Close (PDC):</b> ₹{s.prev_close:,.2f}")
+            lines.append(f"• <b>Central Pivot (P):</b> ₹{s.pivot:,.2f} | CPR Width: {s.cpr_width_pct:.2f}%")
+            lines.append(f"• <b>Market Regime:</b> {regime_icon} <b>{s.regime.replace('_', ' ')}</b>")
+            lines.append(f"• <b>Active Strategy:</b> <b>{strat_label}</b>")
             lines.append("")
 
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("💡 <i>Strategy Execution Policy:</i>")
-        lines.append("• <b>Narrow CPR (<0.20%):</b> High momentum trend expected. ORB Breakouts active.")
-        lines.append("• <b>Wide CPR (>0.35%):</b> Choppy consolidation expected. Breakouts suppressed; Mean Reversion sweeps active.")
-        lines.append("💎 Live alerts will trigger automatically with 1-click execution!")
+        lines.append("🛡️ <i>Pre-Market Research dispatched to Admin Desk ONLY. Public & VIP channels remain clean until confirmed 09:15 / 09:16 trade triggers!</i> 🐂⚡")
 
         msg_text = "\n".join(lines)
         idemp = f"PREMARKET_{d.isoformat()}"
-        await notifier.send_message(msg_text, idempotency_key=idemp)
-        logger.info(f"Broadcasted Pre-Market 09:10 AM Digest to Telegram.")
+        admin_chat = settings.telegram_chat_id
+        await notifier.send_message(msg_text, idempotency_key=idemp, target_chat_id=admin_chat)
+        logger.info(f"Broadcasted Pre-Market 09:10 AM Research to Admin Bot ({admin_chat}).")
         return msg_text
+
 
 
 pre_market_manager = PreMarketManager()
