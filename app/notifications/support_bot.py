@@ -650,6 +650,68 @@ class BornBullSupportBot:
                         )
                         return
 
+            # Admin commands: /10, /5, /20, /journal, /i, /capital, /help, /menu, /status, etc.
+            clean_cmd = text.strip()
+            is_num_cmd = False
+            num_days = 10
+            is_inception = False
+
+            if clean_cmd.startswith("/i") or clean_cmd in ("/livejournal", "livejournal", "/liveaudit", "liveaudit"):
+                is_inception = True
+                is_num_cmd = True
+                if clean_cmd.startswith("/i") and clean_cmd[2:].isdigit():
+                    num_days = int(clean_cmd[2:])
+                else:
+                    num_days = 30
+            elif (clean_cmd.startswith("/") and clean_cmd[1:].isdigit()) or clean_cmd.isdigit():
+                is_num_cmd = True
+                num_days = int(clean_cmd[1:]) if clean_cmd.startswith("/") else int(clean_cmd)
+            elif clean_cmd.startswith(("/journal", "/audit", "/report", "journal", "audit", "report")):
+                is_num_cmd = True
+                parts = clean_cmd.split()
+                if len(parts) > 1 and parts[1].isdigit():
+                    num_days = int(parts[1])
+                else:
+                    num_days = 10
+
+            if is_num_cmd:
+                from app.trading.order_executor import order_executor
+                report_msg = order_executor.format_scalp_journal_telegram(limit=num_days, since_inception=is_inception)
+                await self.send_message(chat_id, report_msg)
+                return
+
+            if clean_cmd in ("/help", "/menu", "/start", "help", "menu", "start"):
+                menu_msg = (
+                    "👑 <b>BornBull 24/7 Trading Desk Admin Menu</b> 🐂\n"
+                    "━━━━━━━━━━━━━━━━━━━━━\n"
+                    "🚀 <b>Live Trades Since Launch (10-Oct onwards):</b>\n"
+                    "• <code>/i</code> : All live trades recorded since launch\n"
+                    "• <code>/i5</code> : Last 5 live sessions\n"
+                    "• <code>/i10</code> : Last 10 live sessions\n"
+                    "• <code>/livejournal</code> : Full live forward audit\n\n"
+                    "📜 <b>Historical Benchmark & Baseline Archive:</b>\n"
+                    "• <code>/5</code> : Last 5 sessions audit\n"
+                    "• <code>/10</code> : Last 10 sessions audit\n"
+                    "• <code>/20</code> : Last 20 sessions audit\n"
+                    "• <code>/journal</code> : Full monthly baseline journal\n\n"
+                    "💰 <b>Risk Management & Compounding:</b>\n"
+                    "• <code>/capital</code> or <code>/balance</code> : Live margin & active lot size\n"
+                    "• <code>/capital withdraw 15000</code> : Record profit withdrawal (auto lot scale down)\n"
+                    "• <code>/capital topup 30000</code> : Record top-up (auto lot scale up)\n"
+                    "• <code>/capital set 30000</code> : Manually set base capital\n\n"
+                    "⚡ <b>Market & Broker Health:</b>\n"
+                    "• <code>/indices</code> : Live NIFTY & BANKNIFTY levels\n"
+                    "• <code>/token</code> : Refresh Dhan 24-hr JWT token\n"
+                    "• <code>/status</code> : System 24/7 engine status"
+                )
+                await self.send_message(chat_id, menu_msg)
+                return
+
+            if clean_cmd.startswith(("/capital", "capital", "/balance", "/funds", "/limit", "/limits", "/risk", "balance", "funds", "limit", "limits", "risk")):
+                from app.trading.order_executor import order_executor
+                await order_executor.handle_telegram_message(msg)
+                return
+
             # If Admin sends any other custom post/text -> Offer 1-click broadcast options
             admin_msg_id = msg.get("message_id")
             preview = (text[:70] or "Text Announcement").replace("<", "&lt;").replace(">", "&gt;")

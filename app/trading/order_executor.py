@@ -1446,9 +1446,9 @@ class DhanOrderExecutor:
         # Historical Benchmark / Journal Audit Commands (/5, /10, /20, /journal)
         is_num_cmd = False
         num_days = 10
-        if clean_text.startswith("/") and clean_text[1:].isdigit():
+        if (clean_text.startswith("/") and clean_text[1:].isdigit()) or clean_text.isdigit():
             is_num_cmd = True
-            num_days = int(clean_text[1:])
+            num_days = int(clean_text[1:]) if clean_text.startswith("/") else int(clean_text)
         elif clean_text.startswith(("/journal", "/audit", "/report", "journal", "audit", "report")):
             is_num_cmd = True
             parts = clean_text.split()
