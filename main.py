@@ -899,20 +899,8 @@ class LiveEngine:
                         except Exception as e:
                             logger.error(f"Error in 09:05 Daily Bias snapshot job: {e}")
 
-                    # 2.8. 09:12 AM Fast Scalp Pre-Market Trade Alert (Public & VIP Channels)
-                    if time(9, 11) <= cur_time < time(9, 14) and sent_scalp_day != c_date:
-                        try:
-                            from app.trading.fast_scalp import fast_scalp_engine
-                            setup = await fast_scalp_engine.evaluate_premarket_scalp(c_date)
-                            if setup:
-                                await fast_scalp_engine.broadcast_premarket_scalp_alert(setup)
-                                logger.info(f"Dispatched 09:12 AM Fast Scalp alert for {setup.contract_symbol} ({setup.direction.value}).")
-                            else:
-                                await fast_scalp_engine.broadcast_no_trade_advisory(c_date)
-                                logger.info("Dispatched 09:12 AM Fast Scalp Capital Protection Advisory (Flat / Choppy Open).")
-                            sent_scalp_day = c_date
-                        except Exception as e:
-                            logger.error(f"Error evaluating 09:12 AM premarket fast scalp: {e}")
+                    # 2.8. 09:16:00 AM Opening Momentum Scalp is the exclusive morning execution strategy
+                    # (Pre-Market 09:08-09:10 is reserved strictly for Admin Research intelligence).
 
                     # 3. 09:14 AM Pre-Market Final Briefing
                     if time(9, 14) <= cur_time < time(9, 15) and sent_briefing_day != c_date:
