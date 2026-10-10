@@ -546,12 +546,15 @@ class DhanOrderExecutor:
                     logger.debug(f"Telegram listener polling cycle error: {e}")
                     await asyncio.sleep(2)
 
-    def format_scalp_journal_telegram(self, limit: int = 10) -> str:
+    def format_scalp_journal_telegram(self, limit: int = 10, since_inception: bool = False) -> str:
         """
         Queries persistent SQLite audit table and formats a clean,
-        auditable report for the last N sessions.
+        auditable report.
+        If since_inception is True, filters only sessions on or after 2026-10-10 (live launch).
+        Includes weekdays (e.g. Fri 09-Oct) and displays weekend/holiday breaks.
         """
         import sqlite3
+        from datetime import datetime
         from pathlib import Path
         db_file = Path(settings.database_path)
         if not db_file.exists():
@@ -562,17 +565,40 @@ class DhanOrderExecutor:
         cur = conn.cursor()
 
         try:
-            cur.execute("""
-                SELECT session_num, trade_date, nifty_open, gap_pts, setup_type,
-                       trade_direction, outcome, net_pnl, running_capital
-                FROM audit_scalp_sessions
-                ORDER BY trade_date ASC
-            """)
+            if since_inception:
+                cur.execute("""
+                    SELECT session_num, trade_date, nifty_open, gap_pts, setup_type,
+                           trade_direction, outcome, net_pnl, running_capital
+                    FROM audit_scalp_sessions
+                    WHERE trade_date > '2026-10-09'
+                    ORDER BY trade_date ASC
+                """)
+            else:
+                cur.execute("""
+                    SELECT session_num, trade_date, nifty_open, gap_pts, setup_type,
+                           trade_direction, outcome, net_pnl, running_capital
+                    FROM audit_scalp_sessions
+                    ORDER BY trade_date ASC
+                """)
             rows = cur.fetchall()
         except Exception as e:
             conn.close()
             return f"⚠️ Error querying journal: {e}"
         conn.close()
+
+        if since_inception and not rows:
+            return (
+                "🚀 <b>BORN BULL LIVE SCALP TRACKER</b> 🐂\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚡ <b>Engine Deployment:</b> 10-Oct-2026 (Live 24/7 on Google Cloud)\n"
+                "📅 <b>Next Live Session:</b> <b>Monday 12-Oct-2026 (09:15 AM Open)</b>\n"
+                "💎 <b>Trades Executed Since Launch:</b> 0\n"
+                "💰 <b>Trading Capital:</b> ₹30,000.00 (1 Lot Dynamic Scalp)\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "🛡️ <i>The system is armed and awaiting Monday 09:08 AM Pre-Market data.</i>\n"
+                "📊 <i>All forward live trades and compounding gains will automatically log here!</i>\n\n"
+                "👉 <i>Type /journal or /10 to view the 22-session verified benchmark journal.</i>"
+            )
 
         if not rows:
             return "ℹ️ No recorded scalp sessions in journal database yet."
@@ -588,12 +614,23 @@ class DhanOrderExecutor:
         start_cap = selected_rows[0]["running_capital"] - selected_rows[0]["net_pnl"]
 
         day_lines = []
+        prev_date = None
         for r in selected_rows:
             d_str = r["trade_date"]
             try:
-                from datetime import datetime
                 d_obj = datetime.strptime(d_str, "%Y-%m-%d").date()
-                d_fmt = d_obj.strftime("%d-%b")
+                d_fmt = d_obj.strftime("%a %d-%b")  # e.g. "Fri 09-Oct", "Mon 05-Oct"
+
+                # Check gap between previous trading session and current
+                if prev_date is not None:
+                    gap_days = (d_obj - prev_date).days
+                    if gap_days == 3 and prev_date.weekday() == 4:
+                        day_lines.append("  🗓️ <i>[Sat-Sun: Weekend (Market Closed)]</i>")
+                    elif gap_days > 3:
+                        day_lines.append(f"  🏖️ <i>[Market Closed: Weekend & Holiday ({gap_days - 1} Days)]</i>")
+                    elif gap_days > 1:
+                        day_lines.append(f"  🏖️ <i>[Market Holiday ({gap_days - 1} Day{'s' if gap_days > 2 else ''})]</i>")
+                prev_date = d_obj
             except Exception:
                 d_fmt = d_str
 
@@ -626,8 +663,14 @@ class DhanOrderExecutor:
         period_start = selected_rows[0]["trade_date"]
         period_end = selected_rows[-1]["trade_date"]
 
+        header_title = (
+            f"🚀 <b>BORN BULL LIVE SESSIONS SINCE LAUNCH ({len(selected_rows)} SESSIONS)</b>"
+            if since_inception
+            else f"📊 <b>BORN BULL SCALP AUDIT ({len(selected_rows)} SESSIONS)</b>"
+        )
+
         lines = [
-            f"📊 <b>BORN BULL SCALP AUDIT ({len(selected_rows)} SESSIONS)</b>",
+            header_title,
             "━━━━━━━━━━━━━━━━━━━━━",
             f"📅 <b>Period:</b> {period_start} ➔ {period_end}",
             f"💰 <b>Starting Balance:</b> ₹{start_cap:,.2f}",
@@ -637,10 +680,10 @@ class DhanOrderExecutor:
             f"🎯 <b>Targets Hit:</b> {wins} | 🛡️ <b>Cost Shields:</b> {shields} | 🛑 <b>Losses:</b> {losses}",
             f"💎 <b>Chop Days Defended:</b> {skips} days (₹0 loss)",
             "━━━━━━━━━━━━━━━━━━━━━",
-            "📈 <b>Recent Day-by-Day Breakdown:</b>",
+            "📈 <b>Day-by-Day Session Breakdown:</b>",
         ]
 
-        if len(day_lines) > 20:
+        if len(day_lines) > 24:
             lines.extend(day_lines[:5])
             lines.append(f"<i>... [{len(day_lines) - 10} sessions omitted for brevity] ...</i>")
             lines.extend(day_lines[-5:])
@@ -1360,6 +1403,47 @@ class DhanOrderExecutor:
         # 2. Authorized Admin Commands (Dhan Execution & Management)
         # -------------------------------------------------------------
         clean_text = text.strip()
+
+        # Help / Admin Menu
+        if text.strip() in ("/help", "/menu", "/start", "help", "menu", "start"):
+            menu_msg = (
+                "👑 <b>BornBull 24/7 Trading Desk Admin Menu</b> 🐂\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "🚀 <b>Live Trades Since Launch (10-Oct onwards):</b>\n"
+                "• <code>/i</code> : All live trades recorded since launch\n"
+                "• <code>/i5</code> : Last 5 live sessions\n"
+                "• <code>/i10</code> : Last 10 live sessions\n"
+                "• <code>/livejournal</code> : Full live forward audit\n\n"
+                "📜 <b>Historical Benchmark & Baseline Archive:</b>\n"
+                "• <code>/5</code> : Last 5 sessions audit\n"
+                "• <code>/10</code> : Last 10 sessions audit\n"
+                "• <code>/20</code> : Last 20 sessions audit\n"
+                "• <code>/journal</code> : Full monthly baseline journal\n\n"
+                "💰 <b>Risk Management & Compounding:</b>\n"
+                "• <code>/capital</code> or <code>/balance</code> : Live margin & active lot size\n"
+                "• <code>/capital withdraw 15000</code> : Record profit withdrawal (auto lot scale down)\n"
+                "• <code>/capital topup 30000</code> : Record top-up (auto lot scale up)\n"
+                "• <code>/capital set 30000</code> : Manually set base capital\n\n"
+                "⚡ <b>Market & Broker Health:</b>\n"
+                "• <code>/indices</code> : Live NIFTY & BANKNIFTY levels\n"
+                "• <code>/token</code> : Refresh Dhan 24-hr JWT token\n"
+                "• <code>/status</code> : System 24/7 engine status"
+            )
+            await notifier.send_message(menu_msg)
+            return
+
+        # Inception / Forward Live Scalp Audit Commands (/i, /i5, /i10, /livejournal)
+        if clean_text in ("/i", "i", "/livejournal", "livejournal", "/liveaudit", "liveaudit") or (
+            clean_text.startswith("/i") and clean_text[2:].isdigit()
+        ):
+            limit_i = 30
+            if clean_text.startswith("/i") and clean_text[2:].isdigit():
+                limit_i = int(clean_text[2:])
+            report_msg = self.format_scalp_journal_telegram(limit=limit_i, since_inception=True)
+            await notifier.send_message(report_msg)
+            return
+
+        # Historical Benchmark / Journal Audit Commands (/5, /10, /20, /journal)
         is_num_cmd = False
         num_days = 10
         if clean_text.startswith("/") and clean_text[1:].isdigit():
@@ -1374,42 +1458,69 @@ class DhanOrderExecutor:
                 num_days = 10
 
         if is_num_cmd:
-            report_msg = self.format_scalp_journal_telegram(limit=num_days)
+            report_msg = self.format_scalp_journal_telegram(limit=num_days, since_inception=False)
             await notifier.send_message(report_msg)
             return
 
-        if text in ("/balance", "/funds", "/limit", "/limits", "balance", "funds", "limit", "limits"):
-            try:
-                headers = auth.get_headers()
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    resp = await client.get("https://api.dhan.co/v2/fundlimit", headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    avail = float(data.get("availabelBalance", 0.0))
-                    utilized = float(data.get("utilizedAmount", 0.0))
-                    withdrawable = float(data.get("withdrawableBalance", 0.0))
-                    cid = data.get("dhanClientId", settings.dhan_client_id)
+        # Dynamic Capital & Risk Compounding Management
+        if clean_text.startswith(("/capital", "capital", "/balance", "/funds", "/limit", "/limits", "/risk", "balance", "funds", "limit", "limits", "risk")):
+            parts = clean_text.split()
+            if len(parts) >= 3 and parts[1].lower() in ("set", "withdraw", "topup"):
+                action = parts[1].lower()
+                try:
+                    val = float(parts[2].replace(",", "").replace("₹", ""))
+                    if action == "set":
+                        db.set_account_balance(val)
+                        new_cap = val
+                        action_desc = f"✅ Capital manually set to <b>₹{val:,.2f}</b>"
+                    elif action == "withdraw":
+                        new_cap = db.update_account_balance(-val, default_capital=30000.0)
+                        action_desc = f"💸 Recorded withdrawal of <b>₹{val:,.2f}</b>"
+                    else:  # topup
+                        new_cap = db.update_account_balance(val, default_capital=30000.0)
+                        action_desc = f"💰 Recorded top-up of <b>₹{val:,.2f}</b>"
+
+                    from app.trading.fast_scalp import calculate_dynamic_scalp_lots
+                    dynamic_lots, unit = calculate_dynamic_scalp_lots(new_cap)
                     reply = (
-                        "💰 <b>Live Dhan Account Funds</b>\n\n"
-                        f"• <b>Available Margin:</b> ₹{avail:,.2f}\n"
-                        f"• <b>Utilized Margin:</b> ₹{utilized:,.2f}\n"
-                        f"• <b>Withdrawable:</b> ₹{withdrawable:,.2f}\n"
-                        f"• <b>5x Intraday Buying Power:</b> ₹{avail * 5:,.2f}\n"
-                        f"• <b>Client ID:</b> <code>{cid}</code>"
+                        f"{action_desc}\n\n"
+                        f"💼 <b>Updated Capital:</b> ₹{new_cap:,.2f}\n"
+                        f"📊 <b>Active Lot Sizing:</b> <b>{dynamic_lots} Lot{'s' if dynamic_lots > 1 else ''}</b>\n"
+                        f"🎯 <b>Compounding Rule:</b> 1 Lot per ₹{unit:,.0f}"
                     )
-                else:
-                    err_msg = f"HTTP {resp.status_code}: {resp.text}"
-                    fallback_bal = db.get_account_balance(4322.15)
-                    reply = (
-                        f"💰 <b>Dhan Account Funds</b>\n\n"
-                        f"• <b>Available Margin:</b> ₹{fallback_bal:,.2f}\n"
-                        f"• <b>5x Intraday Buying Power:</b> ₹{fallback_bal * 5:,.2f}\n"
-                        f"• <b>Status:</b> Active Standby\n\n"
-                        f"<i>(Dhan Fund API: {err_msg[:60]})</i>"
-                    )
-            except Exception as e:
-                reply = f"⚠️ Error querying Dhan API: {e}"
+                    await notifier.send_message(reply)
+                    return
+                except ValueError:
+                    await notifier.send_message("⚠️ Invalid amount specified. Example: <code>/capital withdraw 15000</code>")
+                    return
+
+            # Default view live funds & compounding lot sizing
+            from app.trading.fast_scalp import get_live_trading_capital, calculate_dynamic_scalp_lots
+            avail = await get_live_trading_capital()
+            dynamic_lots, unit = calculate_dynamic_scalp_lots(avail)
+            next_tier_lots = dynamic_lots + 1
+            next_tier_target = next_tier_lots * unit
+            needed_for_next = max(0.0, next_tier_target - avail)
+
+            reply = (
+                "💰 <b>BornBull Dynamic Capital & Risk Management</b> 🐂\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💵 <b>Available Trading Capital:</b> <b>₹{avail:,.2f}</b>\n"
+                f"📊 <b>Active Scalp Sizing:</b> <b>{dynamic_lots} Lot{'s' if dynamic_lots > 1 else ''}</b>\n"
+                f"⚖️ <b>Base Allocation:</b> ₹{unit:,.0f} per Lot\n\n"
+                "📈 <b>Mathematical Compounding Ladder:</b>\n"
+                f"• Tier 1 (₹30,000 - ₹59,999): 1 Lot\n"
+                f"• Tier 2 (₹60,000 - ₹89,999): 2 Lots\n"
+                f"• Tier 3 (₹90,000 - ₹119,999): 3 Lots\n"
+                f"• Next Scale-Up ({next_tier_lots} Lots) at ₹{next_tier_target:,.0f} (₹{needed_for_next:,.0f} needed)\n\n"
+                "🛡️ <b>Automated Scalability:</b>\n"
+                "• When profits compound or you top-up past ₹60,000 ➔ Auto-scales to 2 Lots!\n"
+                "• If you withdraw profits back to ₹30,000 ➔ Auto-reverts back to 1 Lot!\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "👉 <i>Admin controls: /capital withdraw &lt;amt&gt; | /capital topup &lt;amt&gt;</i>"
+            )
             await notifier.send_message(reply)
+            return
 
         elif text in ("/indices", "/index", "indices", "index"):
             report = await self.get_indices_orb_report()

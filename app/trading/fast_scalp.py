@@ -67,6 +67,56 @@ def format_contract_with_month(
     return f"{sym} {day_month_str} {strike_int} {ot}"
 
 
+async def get_live_trading_capital() -> float:
+    """
+    Retrieves live real-time trading capital:
+    1. If Dhan credentials are active, queries Dhan /v2/fundlimit.
+    2. Synchronizes live Dhan available balance with SQLite database.
+    3. Fallback to SQLite persistent database account_balance.
+    """
+    default_cap = float(getattr(settings, "capital_per_lot", 30000.0))
+    if getattr(settings, "has_dhan_credentials", False):
+        try:
+            import httpx
+            headers = auth.get_headers()
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                resp = await client.get("https://api.dhan.co/v2/fundlimit", headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    avail = float(data.get("availabelBalance", 0.0))
+                    if avail > 0:
+                        db.set_account_balance(avail)
+                        return avail
+        except Exception as e:
+            logger.debug(f"Live fundlimit API check note: {e}")
+
+    return db.get_account_balance(default_cap)
+
+
+def calculate_dynamic_scalp_lots(capital: float) -> Tuple[int, float]:
+    """
+    Calculates dynamic lots based on live capital compounding and risk management.
+    Mathematical Rules:
+      - ₹30,000 -> 1 Lot
+      - ₹60,000 -> 2 Lots
+      - ₹90,000 -> 3 Lots
+      - ₹120,000 -> 4 Lots
+      - Capped by MAX_SCALP_LOTS (default 5)
+    
+    If profits are withdrawn back to ₹30,000, lots automatically drop to 1 Lot.
+    If capital is topped up or compounds past ₹60,000, lots automatically scale up.
+    """
+    unit = max(10000.0, float(getattr(settings, "capital_per_lot", 30000.0)))
+    max_lots = max(1, int(getattr(settings, "max_scalp_lots", 5)))
+
+    raw_lots = int(capital // unit)
+    if raw_lots < 1 and capital >= 15000.0:
+        raw_lots = 1
+
+    lots = max(1, min(max_lots, raw_lots))
+    return lots, unit
+
+
 @dataclass
 class FastScalpSetup:
     trade_date: date
@@ -91,6 +141,8 @@ class FastScalpSetup:
     exit_time: Optional[datetime] = None
     exit_price: float = 0.0
     lot_size: int = 75
+    lots: int = 1                     # Dynamic lots based on live capital compounding
+    capital_available: float = 30000.0 # Live capital at entry time
     trailed_to_cost: bool = False
     opt_contract: Optional[OptionContractInfo] = None
 
@@ -125,6 +177,9 @@ class FastScalpEngine:
         Selects high-conviction pre-market scalp if directional momentum is present.
         """
         d = trade_date or default_session.now().date()
+        live_cap = await get_live_trading_capital()
+        dynamic_lots, _ = calculate_dynamic_scalp_lots(live_cap)
+
         candidates = [
             ("13", "NIFTY"),
             ("25", "BANKNIFTY"),
@@ -207,6 +262,8 @@ class FastScalpEngine:
                     setup_source="PRE_MARKET",
                     status="PENDING",
                     lot_size=lot_size,
+                    lots=dynamic_lots,
+                    capital_available=live_cap,
                     opt_contract=opt_info,
                 )
 
@@ -286,6 +343,9 @@ class FastScalpEngine:
         tgt1_pts = 28.0 if sym == "NIFTY" else 55.0
         tgt2_pts = 42.0 if sym == "NIFTY" else 85.0
 
+        live_cap = await get_live_trading_capital()
+        dynamic_lots, _ = calculate_dynamic_scalp_lots(live_cap)
+
         setup = FastScalpSetup(
             trade_date=d,
             symbol=sym,
@@ -307,6 +367,8 @@ class FastScalpEngine:
             status="ACTIVE",
             entry_time=default_session.now(),
             lot_size=lot_size,
+            lots=dynamic_lots,
+            capital_available=live_cap,
             opt_contract=opt_info,
         )
 
@@ -328,6 +390,7 @@ class FastScalpEngine:
             "━━━━━━━━━━━━━━━━━━━━━",
             f"🎯 <b>Contract:</b> <code>{setup.contract_symbol}</code> <i>(Tap to Copy)</i>",
             f"⚡ <b>Action:</b> {dir_label} at 09:15:00 AM Open 🚀",
+            f"📊 <b>Position Sizing:</b> <b>{setup.lots} Lot{'s' if setup.lots > 1 else ''}</b> ({setup.lots * setup.lot_size} Qty) <i>[Available Capital: ₹{setup.capital_available:,.2f}]</i>",
             "",
             f"💵 <b>Entry:</b> ₹{setup.entry_est:,.1f} - ₹{setup.entry_est + 4:,.1f}",
             f"🛡️ <b>SL:</b> ₹{setup.stop_loss:,.1f} <i>(Strict -{pts_sl} pts)</i>",
@@ -366,7 +429,7 @@ class FastScalpEngine:
                         "margin_req": setup.opt_contract.margin_required,
                         "opt_contract": setup.opt_contract,
                     }
-                    st_cat, ok, res_msg = await order_executor.execute_dhan_order(order_data, lot_multiplier=1)
+                    st_cat, ok, res_msg = await order_executor.execute_dhan_order(order_data, lot_multiplier=setup.lots)
                     if ok:
                         await notifier.send_message(f"🚀 <b>Live Pre-Market Scalp Executed on Dhan:</b>\n\n{res_msg}")
                     else:
@@ -392,6 +455,7 @@ class FastScalpEngine:
             "━━━━━━━━━━━━━━━━━━━━━",
             f"🎯 <b>Contract:</b> <code>{setup.contract_symbol}</code> <i>(Tap to Copy)</i>",
             f"⚡ <b>Action:</b> {dir_label} NOW 🚀",
+            f"📊 <b>Position Sizing:</b> <b>{setup.lots} Lot{'s' if setup.lots > 1 else ''}</b> ({setup.lots * setup.lot_size} Qty) <i>[Available Capital: ₹{setup.capital_available:,.2f}]</i>",
             "",
             f"💵 <b>Buy Range:</b> ₹{setup.entry_est:,.1f} - ₹{setup.entry_est + 4:,.1f}",
             f"🛡️ <b>SL:</b> ₹{setup.stop_loss:,.1f} <i>(Strict -{pts_sl} pts)</i>",
@@ -421,7 +485,7 @@ class FastScalpEngine:
                     "opt_contract": setup.opt_contract,
                 }
                 async def _exec_0916_scalp():
-                    st_cat, ok, res_msg = await order_executor.execute_dhan_order(order_data, lot_multiplier=1)
+                    st_cat, ok, res_msg = await order_executor.execute_dhan_order(order_data, lot_multiplier=setup.lots)
                     if ok:
                         await notifier.send_message(f"🚀 <b>Live 09:16 Scalp Executed on Dhan:</b>\n\n{res_msg}")
                     else:
@@ -448,6 +512,26 @@ class FastScalpEngine:
         ]
 
         text = "\n".join(lines)
+        try:
+            current_cap = db.get_account_balance(float(getattr(settings, "capital_per_lot", 30000.0)))
+            db.record_scalp_session(
+                trade_date=d.isoformat(),
+                nifty_open=0.0,
+                nifty_high=0.0,
+                nifty_low=0.0,
+                nifty_close=0.0,
+                gap_pts=0.0,
+                setup_type="PRE_MARKET",
+                trade_direction="NO_TRADE",
+                outcome="NO_TRADE_NEUTRAL_RANGE",
+                gross_pnl=0.0,
+                brokerage_taxes=0.0,
+                net_pnl=0.0,
+                running_capital=current_cap,
+            )
+        except Exception as e:
+            logger.debug(f"Error recording no-trade session to DB: {e}")
+
         return await self._dispatch_to_all_channels(text, idemp)
 
     async def notify_trail_sl_to_cost(self, setup: FastScalpSetup) -> bool:
@@ -471,15 +555,40 @@ class FastScalpEngine:
         setup.exit_time = default_session.now()
         setup.exit_price = current_price
         pts_gained = round(current_price - setup.entry_est, 1)
-        lot_profit = int(pts_gained * setup.lot_size)
+        per_lot_profit = int(pts_gained * setup.lot_size)
+        total_profit = int(per_lot_profit * setup.lots)
+        new_balance = db.update_account_balance(total_profit, default_capital=30000.0)
         idemp = f"SCALP_TARGET_{setup.symbol}_{setup.trade_date.isoformat()}_{setup.setup_source}"
 
+        brokerage = round(57.60 * setup.lots, 2)
+        net_pnl = round(total_profit - brokerage, 2)
+        try:
+            db.record_scalp_session(
+                trade_date=setup.trade_date.isoformat(),
+                nifty_open=setup.underlying_price,
+                nifty_high=setup.underlying_price,
+                nifty_low=setup.underlying_price,
+                nifty_close=setup.underlying_price,
+                gap_pts=setup.gap_points,
+                setup_type=setup.setup_source,
+                trade_direction="BUY_CE" if setup.direction == Direction.LONG else "BUY_PE",
+                outcome="TARGET_HIT",
+                gross_pnl=float(total_profit),
+                brokerage_taxes=brokerage,
+                net_pnl=net_pnl,
+                running_capital=new_balance,
+            )
+        except Exception as e:
+            logger.error(f"Error recording scalp target session to DB: {e}")
+
+        lot_str = f"{setup.lots} Lot{'s' if setup.lots > 1 else ''}"
         lines = [
             "🎉🏆 <b>BOOM! TARGET ACHIEVED!</b> 🚀🎉",
             "━━━━━━━━━━━━━━━━━━━━━",
             f"⚡ <b>{setup.contract_symbol}</b>",
             f"🎯 <b>Exit:</b> ₹{current_price:,.1f} <b>(+{pts_gained} PTS GAINED!)</b> 💰",
-            f"💸 <b>1-Lot Profit:</b> +₹{lot_profit:,} 🔥",
+            f"💸 <b>Net Realized Profit:</b> <b>+₹{total_profit:,}</b> <i>({lot_str} × ₹{per_lot_profit:,}/lot)</i> 🔥",
+            f"💼 <b>Compounded Live Balance:</b> ₹{new_balance:,.2f} 📈",
             "",
             "👑 <i>Low Risk, Maximum Gains! Book profits or trail SL to cost!</i> 🚀",
         ]
@@ -493,13 +602,40 @@ class FastScalpEngine:
         setup.exit_time = default_session.now()
         setup.exit_price = current_price
         pts_lost = round(setup.entry_est - current_price, 1)
+        per_lot_loss = int(pts_lost * setup.lot_size)
+        total_loss = int(per_lot_loss * setup.lots)
+        new_balance = db.update_account_balance(-total_loss, default_capital=30000.0)
         idemp = f"SCALP_STOP_{setup.symbol}_{setup.trade_date.isoformat()}_{setup.setup_source}"
 
+        brokerage = round(57.60 * setup.lots, 2)
+        net_pnl = round(-total_loss - brokerage, 2)
+        try:
+            db.record_scalp_session(
+                trade_date=setup.trade_date.isoformat(),
+                nifty_open=setup.underlying_price,
+                nifty_high=setup.underlying_price,
+                nifty_low=setup.underlying_price,
+                nifty_close=setup.underlying_price,
+                gap_pts=setup.gap_points,
+                setup_type=setup.setup_source,
+                trade_direction="BUY_CE" if setup.direction == Direction.LONG else "BUY_PE",
+                outcome="STOP_LOSS",
+                gross_pnl=float(-total_loss),
+                brokerage_taxes=brokerage,
+                net_pnl=net_pnl,
+                running_capital=new_balance,
+            )
+        except Exception as e:
+            logger.error(f"Error recording scalp stop loss session to DB: {e}")
+
+        lot_str = f"{setup.lots} Lot{'s' if setup.lots > 1 else ''}"
         lines = [
             "🛡️ <b>STOP LOSS HIT</b> 🛡️",
             "━━━━━━━━━━━━━━━━━━━━━",
             f"⚡ <b>{setup.contract_symbol}</b>",
             f"• <b>Exit:</b> ₹{current_price:,.1f} (-{pts_lost} pts)",
+            f"• <b>Net Realized Loss:</b> -₹{total_loss:,} <i>({lot_str})</i>",
+            f"💼 <b>Remaining Live Balance:</b> ₹{new_balance:,.2f}",
             "",
             "💬 <i>Disciplined small loss! We strictly hunt low-risk, high-reward setups. Stay ready for the next primary setup!</i> 🐂⚡",
         ]

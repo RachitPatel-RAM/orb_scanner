@@ -837,6 +837,56 @@ class Database:
         logger.info(f"Compounded Trading Capital: ₹{current:.2f} -> ₹{new_balance:.2f} (PnL: {pnl:+.2f})")
         return new_balance
 
+    def record_scalp_session(
+        self,
+        trade_date: str,
+        nifty_open: float,
+        nifty_high: float,
+        nifty_low: float,
+        nifty_close: float,
+        gap_pts: float,
+        setup_type: str,
+        trade_direction: str,
+        outcome: str,
+        gross_pnl: float,
+        brokerage_taxes: float,
+        net_pnl: float,
+        running_capital: float,
+    ) -> None:
+        """Records an auditable scalp session into audit_scalp_sessions."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(session_num) FROM audit_scalp_sessions")
+            row = cur.fetchone()
+            next_num = (row[0] or 0) + 1 if row else 1
+
+            conn.execute("""
+                INSERT INTO audit_scalp_sessions (
+                    session_num, trade_date, nifty_open, nifty_high, nifty_low, nifty_close,
+                    gap_pts, setup_type, trade_direction, outcome, gross_pnl, brokerage_taxes,
+                    net_pnl, running_capital
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    nifty_open=excluded.nifty_open,
+                    nifty_high=excluded.nifty_high,
+                    nifty_low=excluded.nifty_low,
+                    nifty_close=excluded.nifty_close,
+                    gap_pts=excluded.gap_pts,
+                    setup_type=excluded.setup_type,
+                    trade_direction=excluded.trade_direction,
+                    outcome=excluded.outcome,
+                    gross_pnl=excluded.gross_pnl,
+                    brokerage_taxes=excluded.brokerage_taxes,
+                    net_pnl=excluded.net_pnl,
+                    running_capital=excluded.running_capital,
+                    recorded_at=CURRENT_TIMESTAMP
+            """, (
+                next_num, trade_date, nifty_open, nifty_high, nifty_low, nifty_close,
+                gap_pts, setup_type, trade_direction, outcome, gross_pnl, brokerage_taxes,
+                net_pnl, running_capital
+            ))
+        logger.info(f"Recorded scalp session #{next_num} for {trade_date}: {outcome} (Net: ₹{net_pnl:+.2f})")
+
     def save_learned_state(self, state: Dict[str, Any]) -> None:
         """Saves learned ML/statistical model state to key-value store."""
         with self.get_connection() as conn:
