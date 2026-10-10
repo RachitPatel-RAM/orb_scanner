@@ -399,20 +399,19 @@ class FastScalpEngine:
         pts_sl = round(setup.entry_est - setup.stop_loss, 1)
         pts_tgt = round(setup.target_1 - setup.entry_est, 1)
 
+        pts_tgt2 = round(setup.target_2 - setup.entry_est, 1)
+
         lines = [
-            "⚡ <b>[FAST SCALP: PRE-MARKET TRADE]</b> ⚡",
+            "⚡ <b>[PRE-MARKET SCALP ALERT]</b> 🚀",
             "━━━━━━━━━━━━━━━━━━━━━",
-            f"🎯 <b>Contract:</b> <code>{setup.contract_symbol}</code> <i>(Tap to Copy)</i>",
-            f"⚡ <b>Action:</b> {dir_label} at 09:15:00 AM Open 🚀",
-            f"📊 <b>Position Sizing:</b> <b>{setup.lots} Lot{'s' if setup.lots > 1 else ''}</b> ({setup.lots * setup.lot_size} Qty) <i>[Available Capital: ₹{setup.capital_available:,.2f}]</i>",
-            "",
-            f"💵 <b>Entry:</b> ₹{setup.entry_est:,.1f} - ₹{setup.entry_est + 4:,.1f}",
-            f"🛡️ <b>SL:</b> ₹{setup.stop_loss:,.1f} <i>(Strict -{pts_sl} pts)</i>",
-            f"🎯 <b>TGT 1:</b> ₹{setup.target_1:,.1f} <i>(+{pts_tgt} pts)</i>",
-            f"🚀 <b>TGT 2:</b> ₹{setup.target_2:,.1f} <i>(+{round(setup.target_2 - setup.entry_est, 1)} pts)</i>",
-            f"⚖️ <b>Risk/Reward:</b> <b>{setup.risk_reward}</b> 🔥",
+            f"🎯 <b>Contract:</b> <code>{setup.contract_symbol}</code>",
+            f"⚡ <b>Action:</b> {dir_label} 💥",
+            f"💵 <b>Buy Range:</b> ₹{setup.entry_est:,.1f} - ₹{setup.entry_est + 4:,.1f}",
+            f"🛑 <b>Stop Loss:</b> ₹{setup.stop_loss:,.1f} (-{pts_sl} pts)",
+            f"🎯 <b>Target 1:</b> ₹{setup.target_1:,.1f} (+{pts_tgt} pts)",
+            f"🏆 <b>Target 2:</b> ₹{setup.target_2:,.1f} (+{pts_tgt2} pts)",
             "━━━━━━━━━━━━━━━━━━━━━",
-            "⚡ <i>Quick 2-min scalp. Book at Target or trail SL to cost!</i>",
+            "⚡ <i>Fast execution at 09:15 AM Open! Set SL immediately!</i> 🐂🔥",
         ]
 
         text = "\n".join(lines)
@@ -463,21 +462,19 @@ class FastScalpEngine:
         dir_label = "🟢 BUY CALL (CE)" if setup.direction == Direction.LONG else "🔴 BUY PUT (PE)"
         pts_sl = round(setup.entry_est - setup.stop_loss, 1)
         pts_tgt = round(setup.target_1 - setup.entry_est, 1)
+        pts_tgt2 = round(setup.target_2 - setup.entry_est, 1)
 
         lines = [
-            "🚀 <b>[09:16 AM OPENING MOMENTUM SCALP]</b> ⚡",
+            "🚀 <b>[09:16 AM TRADE ALERT]</b> ⚡",
             "━━━━━━━━━━━━━━━━━━━━━",
-            f"🎯 <b>Contract:</b> <code>{setup.contract_symbol}</code> <i>(Tap to Copy)</i>",
-            f"⚡ <b>Action:</b> {dir_label} NOW 🚀",
-            f"📊 <b>Position Sizing:</b> <b>{setup.lots} Lot{'s' if setup.lots > 1 else ''}</b> ({setup.lots * setup.lot_size} Qty) <i>[Available Capital: ₹{setup.capital_available:,.2f}]</i>",
-            "",
+            f"🎯 <b>Contract:</b> <code>{setup.contract_symbol}</code>",
+            f"⚡ <b>Action:</b> {dir_label} NOW 💥",
             f"💵 <b>Buy Range:</b> ₹{setup.entry_est:,.1f} - ₹{setup.entry_est + 4:,.1f}",
-            f"🛡️ <b>SL:</b> ₹{setup.stop_loss:,.1f} <i>(Strict -{pts_sl} pts)</i>",
-            f"🎯 <b>TGT 1:</b> ₹{setup.target_1:,.1f} <i>(+{pts_tgt} pts)</i>",
-            f"🚀 <b>TGT 2:</b> ₹{setup.target_2:,.1f} <i>(+{round(setup.target_2 - setup.entry_est, 1)} pts)</i>",
-            f"⚖️ <b>Risk/Reward:</b> <b>{setup.risk_reward}</b> 🔥",
+            f"🛑 <b>Stop Loss:</b> ₹{setup.stop_loss:,.1f} (-{pts_sl} pts)",
+            f"🎯 <b>Target 1:</b> ₹{setup.target_1:,.1f} (+{pts_tgt} pts)",
+            f"🏆 <b>Target 2:</b> ₹{setup.target_2:,.1f} (+{pts_tgt2} pts)",
             "━━━━━━━━━━━━━━━━━━━━━",
-            "⚡ <i>1-Min opening expansion confirmed! Fast execution!</i>",
+            "⚡ <i>Fast execution! Set SL & Target immediately!</i> 🐂🔥",
         ]
 
         text = "\n".join(lines)
