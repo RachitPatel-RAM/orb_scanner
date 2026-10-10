@@ -150,10 +150,11 @@ async def test_trail_sl_to_cost_trigger_at_12_pts_profit(scalp_engine):
         await scalp_engine.on_tick(293.0, trade_date=today)
 
         assert setup.trailed_to_cost is True
-        assert setup.stop_loss == 280.0  # Stop loss shifted to entry price
+        assert setup.stop_loss == 281.0  # Stop loss shifted to entry + 1.0 pt shield (covers Dhan brokerage/taxes)
 
         # Verify alert content
         first_call_text = mock_send.call_args_list[0].args[0]
         assert "TRAIL SL TO COST" in first_call_text
         assert "BANKNIFTY 14 OCT 51400 CE" in first_call_text
-        assert "RISK IS ZERO" in first_call_text
+        assert "BROKERAGE SHIELD" in first_call_text
+

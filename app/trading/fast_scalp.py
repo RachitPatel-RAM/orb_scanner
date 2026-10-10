@@ -537,14 +537,15 @@ class FastScalpEngine:
     async def notify_trail_sl_to_cost(self, setup: FastScalpSetup) -> bool:
         """Dispatches proactive Zero-Risk Trail-to-Cost alert when trade reaches +12 pts."""
         idemp = f"SCALP_TRAIL_{setup.symbol}_{setup.trade_date.isoformat()}_{setup.setup_source}"
+        shield_price = round(setup.entry_est + 1.0 if setup.direction == Direction.LONG else setup.entry_est - 1.0, 1)
         lines = [
-            "🛡️ <b>TRAIL SL TO COST — RISK IS ZERO!</b> 🛡️",
+            "🛡️ <b>TRAIL SL TO COST + 1.0 PT — BROKERAGE SHIELD!</b> 🛡️",
             "━━━━━━━━━━━━━━━━━━━━━",
             f"⚡ <code>{setup.contract_symbol}</code>",
             "📈 <b>Profit:</b> +12 to +15 Points in Profit! 🚀",
-            f"👉 Shift your Stop Loss to <b>₹{setup.entry_est:,.1f} (Cost Price)</b> NOW.",
+            f"👉 Shift Stop Loss to <b>₹{shield_price:,.1f} (Entry + 1.0 pt Shield)</b> NOW.",
             "",
-            "💎 <i>Capital 100% Protected! Free ride to Target!</i> 🔥",
+            "💎 <i>100% of Dhan Brokerage & Taxes are now covered by the market! Zero risk to your ₹30,000!</i> 🔥",
         ]
         text = "\n".join(lines)
         return await self._dispatch_to_all_channels(text, idemp)
@@ -560,7 +561,7 @@ class FastScalpEngine:
         new_balance = db.update_account_balance(total_profit, default_capital=30000.0)
         idemp = f"SCALP_TARGET_{setup.symbol}_{setup.trade_date.isoformat()}_{setup.setup_source}"
 
-        brokerage = round(57.60 * setup.lots, 2)
+        brokerage = round(69.60 * setup.lots, 2)
         net_pnl = round(total_profit - brokerage, 2)
         try:
             db.record_scalp_session(
@@ -597,17 +598,60 @@ class FastScalpEngine:
         return await self._dispatch_to_all_channels(text, idemp)
 
     async def notify_stop_loss_hit(self, setup: FastScalpSetup, current_price: float) -> bool:
-        """Dispatches short, reassuring, disciplined Stop Loss alert."""
-        setup.status = "STOP_HIT"
+        """Dispatches disciplined Stop Loss or Cost Shield alert."""
         setup.exit_time = default_session.now()
         setup.exit_price = current_price
+
+        # Check if trade was already protected by Cost Shield
+        if setup.trailed_to_cost:
+            setup.status = "COST_SHIELD"
+            pts_shield = 1.0
+            gross_pnl = round(pts_shield * setup.lot_size * setup.lots, 2)
+            brokerage = round(69.60 * setup.lots, 2)
+            net_pnl = round(gross_pnl - brokerage, 2)  # +Rs. 5.40 net profit
+            new_balance = db.update_account_balance(net_pnl, default_capital=30000.0)
+            idemp = f"SCALP_SHIELD_{setup.symbol}_{setup.trade_date.isoformat()}_{setup.setup_source}"
+
+            try:
+                db.record_scalp_session(
+                    trade_date=setup.trade_date.isoformat(),
+                    nifty_open=setup.underlying_price,
+                    nifty_high=setup.underlying_price,
+                    nifty_low=setup.underlying_price,
+                    nifty_close=setup.underlying_price,
+                    gap_pts=setup.gap_points,
+                    setup_type=setup.setup_source,
+                    trade_direction="BUY_CE" if setup.direction == Direction.LONG else "BUY_PE",
+                    outcome="COST_SHIELD (+1.0 pt)",
+                    gross_pnl=float(gross_pnl),
+                    brokerage_taxes=brokerage,
+                    net_pnl=net_pnl,
+                    running_capital=new_balance,
+                )
+            except Exception as e:
+                logger.error(f"Error recording cost shield session to DB: {e}")
+
+            lines = [
+                "🛡️ <b>COST SHIELD EXIT (ZERO CAPITAL RISK)</b> 🛡️",
+                "━━━━━━━━━━━━━━━━━━━━━",
+                f"⚡ <b>{setup.contract_symbol}</b>",
+                f"• <b>Exit:</b> ₹{current_price:,.1f} (+1.0 pt Brokerage Shield)",
+                f"• <b>Net P&L:</b> +₹{net_pnl:,.2f} <i>(100% Dhan Brokerage & Taxes Covered!)</i>",
+                f"💼 <b>Protected Balance:</b> ₹{new_balance:,.2f}",
+                "",
+                "💎 <i>Capital 100% safe! Not a single rupee paid out of pocket. Market covered all broker charges!</i> 🐂⚡",
+            ]
+            text = "\n".join(lines)
+            return await self._dispatch_to_all_channels(text, idemp)
+
+        setup.status = "STOP_HIT"
         pts_lost = round(setup.entry_est - current_price, 1)
         per_lot_loss = int(pts_lost * setup.lot_size)
         total_loss = int(per_lot_loss * setup.lots)
         new_balance = db.update_account_balance(-total_loss, default_capital=30000.0)
         idemp = f"SCALP_STOP_{setup.symbol}_{setup.trade_date.isoformat()}_{setup.setup_source}"
 
-        brokerage = round(57.60 * setup.lots, 2)
+        brokerage = round(69.60 * setup.lots, 2)
         net_pnl = round(-total_loss - brokerage, 2)
         try:
             db.record_scalp_session(
@@ -650,11 +694,14 @@ class FastScalpEngine:
             if s.trade_date != d or s.status != "ACTIVE":
                 continue
 
-            # Smart Move: Trail SL to cost when trade gains +12 points
+            # Smart Move: Trail SL to Cost + 1.0 pt (Brokerage Shield) when trade gains +12 points
             pts_profit = (ltp - s.entry_est) if s.direction == Direction.LONG else (s.entry_est - ltp)
             if pts_profit >= 12.0 and not s.trailed_to_cost:
                 s.trailed_to_cost = True
-                s.stop_loss = s.entry_est
+                if s.direction == Direction.LONG:
+                    s.stop_loss = round(s.entry_est + 1.0, 1)
+                else:
+                    s.stop_loss = round(s.entry_est - 1.0, 1)
                 await self.notify_trail_sl_to_cost(s)
 
             if s.direction == Direction.LONG:
