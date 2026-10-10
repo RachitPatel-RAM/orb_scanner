@@ -227,7 +227,7 @@ class AppSettings:
             os.getenv("ENABLE_ORB_STRATEGY", "false").strip().lower() in ("true", "1", "yes")
         )
         self.capital_per_lot: float = float(os.getenv("CAPITAL_PER_LOT", "30000.0").strip())
-        self.max_scalp_lots: int = int(os.getenv("MAX_SCALP_LOTS", "5").strip())
+        self.max_scalp_lots: int = int(os.getenv("MAX_SCALP_LOTS", "108").strip())
         self.session_context_enabled: bool = (
             os.getenv("SESSION_CONTEXT_ENABLED", "false").strip().lower() in ("true", "1", "yes")
         )

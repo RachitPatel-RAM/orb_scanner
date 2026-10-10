@@ -93,21 +93,31 @@ async def get_live_trading_capital() -> float:
     return db.get_account_balance(default_cap)
 
 
-def calculate_dynamic_scalp_lots(capital: float) -> Tuple[int, float]:
+def calculate_dynamic_scalp_lots(capital: float, symbol: str = "NIFTY") -> Tuple[int, float]:
     """
     Calculates dynamic lots based on live capital compounding and risk management.
     Mathematical Rules:
       - ₹30,000 -> 1 Lot
       - ₹60,000 -> 2 Lots
       - ₹90,000 -> 3 Lots
-      - ₹120,000 -> 4 Lots
-      - Capped by MAX_SCALP_LOTS (default 5)
+      - Compounding scales up to index-specific institutional caps:
+        * NIFTY: max 108 Lots (8,100 shares - auspicious & clean 5 slices)
+        * BANKNIFTY: max 60 Lots (1,800 shares - clean 2 slices)
+        * SENSEX: max 50 Lots (1,000 shares - clean 1 slice)
     
     If profits are withdrawn back to ₹30,000, lots automatically drop to 1 Lot.
-    If capital is topped up or compounds past ₹60,000, lots automatically scale up.
+    If capital is topped up or compounds past ₹60,000+, lots automatically scale up.
     """
     unit = max(10000.0, float(getattr(settings, "capital_per_lot", 30000.0)))
-    max_lots = max(1, int(getattr(settings, "max_scalp_lots", 5)))
+    configured_max = max(1, int(getattr(settings, "max_scalp_lots", 108)))
+
+    sym_upper = (symbol or "NIFTY").upper()
+    if sym_upper == "BANKNIFTY":
+        max_lots = min(configured_max, 60)
+    elif sym_upper == "SENSEX":
+        max_lots = min(configured_max, 50)
+    else:
+        max_lots = min(configured_max, 108)
 
     raw_lots = int(capital // unit)
     if raw_lots < 1 and capital >= 15000.0:
@@ -115,6 +125,7 @@ def calculate_dynamic_scalp_lots(capital: float) -> Tuple[int, float]:
 
     lots = max(1, min(max_lots, raw_lots))
     return lots, unit
+
 
 
 @dataclass
@@ -240,6 +251,8 @@ class FastScalpEngine:
             target_1 = round(est_ltp + tgt1_pts, 1)
             target_2 = round(est_ltp + tgt2_pts, 1)
 
+            dynamic_lots, _ = calculate_dynamic_scalp_lots(live_cap, sym)
+
             if gap_abs > max_edge:
                 max_edge = gap_abs
                 best_setup = FastScalpSetup(
@@ -266,6 +279,7 @@ class FastScalpEngine:
                     capital_available=live_cap,
                     opt_contract=opt_info,
                 )
+
 
         return best_setup
 
@@ -344,7 +358,7 @@ class FastScalpEngine:
         tgt2_pts = 42.0 if sym == "NIFTY" else 85.0
 
         live_cap = await get_live_trading_capital()
-        dynamic_lots, _ = calculate_dynamic_scalp_lots(live_cap)
+        dynamic_lots, _ = calculate_dynamic_scalp_lots(live_cap, sym)
 
         setup = FastScalpSetup(
             trade_date=d,
