@@ -67,6 +67,34 @@ def format_contract_with_month(
     return f"{sym} {day_month_str} {strike_int} {ot}"
 
 
+def format_contract_for_alert(
+    underlying: str,
+    strike: float,
+    opt_type: str,
+    expiry_date_str: Optional[str] = None,
+    ref_date: Optional[date] = None,
+) -> str:
+    """Formats contract as 'SENSEX 72500 PE 09 OCT' for tap-to-copy alerts."""
+    sym = underlying.upper().strip()
+    ot = opt_type.upper().strip()
+    strike_int = int(round(strike))
+    day_month_str = ""
+    if expiry_date_str:
+        try:
+            d_part = expiry_date_str.split(" ")[0].strip()
+            exp_d = datetime.strptime(d_part, "%Y-%m-%d").date()
+            day_month_str = exp_d.strftime("%d %b").upper()
+        except Exception:
+            pass
+    if not day_month_str:
+        base_d = ref_date or default_session.now().date()
+        target_weekday = 2 if sym == "BANKNIFTY" else 3
+        days_ahead = (target_weekday - base_d.weekday()) % 7
+        exp_d = base_d + timedelta(days=days_ahead)
+        day_month_str = exp_d.strftime("%d %b").upper()
+    return f"{sym} {strike_int} {ot} {day_month_str}"
+
+
 async def get_live_trading_capital() -> float:
     """
     Retrieves live real-time trading capital:
@@ -401,17 +429,23 @@ class FastScalpEngine:
 
         pts_tgt2 = round(setup.target_2 - setup.entry_est, 1)
 
+        total_qty = setup.lots * setup.lot_size
+        margin_est = setup.entry_est * total_qty
+        spot_desc = "Above Day High" if setup.direction == Direction.SHORT else "Below Day Low"
+        shield_trigger = setup.entry_est + (25.0 if setup.direction == Direction.LONG else -25.0)
+        shield_sl = setup.entry_est + (8.0 if setup.direction == Direction.LONG else -8.0)
+
         lines = [
-            "⚡ <b>[PRE-MARKET SCALP ALERT]</b> 🚀",
-            "━━━━━━━━━━━━━━━━━━━━━",
-            f"🎯 <b>Contract:</b> <code>{setup.contract_symbol}</code>",
-            f"⚡ <b>Action:</b> {dir_label} 💥",
-            f"💵 <b>Buy Range:</b> ₹{setup.entry_est:,.1f} - ₹{setup.entry_est + 4:,.1f}",
-            f"🛑 <b>Stop Loss:</b> ₹{setup.stop_loss:,.1f} (-{pts_sl} pts)",
-            f"🎯 <b>Target 1:</b> ₹{setup.target_1:,.1f} (+{pts_tgt} pts)",
-            f"🏆 <b>Target 2:</b> ₹{setup.target_2:,.1f} (+{pts_tgt2} pts)",
-            "━━━━━━━━━━━━━━━━━━━━━",
-            "⚡ <i>Fast execution at 09:15 AM Open! Set SL immediately!</i> 🐂🔥",
+            "<b>Premium Index F&O</b>",
+            f"⚡ <b>BUY {setup.contract_symbol} ABOVE {setup.entry_est:,.0f}</b>",
+            "",
+            f"🎯 <b>TARGET 1 :-</b> {setup.target_1:,.0f} (+{pts_tgt:,.0f} Points)",
+            f"🎯 <b>TARGET 2 :-</b> {setup.target_2:,.0f} (+{pts_tgt2:,.0f} Points)",
+            f"🛑 <b>SL :-</b> {setup.stop_loss:,.0f} (-{pts_sl:,.0f} Points)",
+            f"📍 <b>Spot SL :-</b> {setup.underlying_price:,.0f} ({spot_desc})",
+            "",
+            f"💼 <b>Sizing:</b> {setup.lots} Lots ({total_qty} Units) | Margin: ₹{margin_est:,.0f}",
+            f"🛡️ <b>Cost Shield:</b> Move SL to ₹{shield_sl:,.0f} once price hits ₹{shield_trigger:,.0f}",
         ]
 
         text = "\n".join(lines)
@@ -464,17 +498,32 @@ class FastScalpEngine:
         pts_tgt = round(setup.target_1 - setup.entry_est, 1)
         pts_tgt2 = round(setup.target_2 - setup.entry_est, 1)
 
+        total_qty = setup.lots * setup.lot_size
+        margin_est = setup.entry_est * total_qty
+        spot_desc = "Above Day High" if setup.direction == Direction.SHORT else "Below Day Low"
+        shield_trigger = setup.entry_est + (25.0 if setup.direction == Direction.LONG else -25.0)
+        shield_sl = setup.entry_est + (8.0 if setup.direction == Direction.LONG else -8.0)
+
+        exp_str = setup.opt_contract.expiry_date if setup.opt_contract else None
+        contract_alert_str = format_contract_for_alert(
+            underlying=setup.symbol,
+            strike=setup.strike_price,
+            opt_type=setup.option_type,
+            expiry_date_str=exp_str,
+            ref_date=setup.trade_date,
+        )
+
         lines = [
-            "🚀 <b>[09:16 AM TRADE ALERT]</b> ⚡",
-            "━━━━━━━━━━━━━━━━━━━━━",
-            f"🎯 <b>Contract:</b> <code>{setup.contract_symbol}</code>",
-            f"⚡ <b>Action:</b> {dir_label} NOW 💥",
-            f"💵 <b>Buy Range:</b> ₹{setup.entry_est:,.1f} - ₹{setup.entry_est + 4:,.1f}",
-            f"🛑 <b>Stop Loss:</b> ₹{setup.stop_loss:,.1f} (-{pts_sl} pts)",
-            f"🎯 <b>Target 1:</b> ₹{setup.target_1:,.1f} (+{pts_tgt} pts)",
-            f"🏆 <b>Target 2:</b> ₹{setup.target_2:,.1f} (+{pts_tgt2} pts)",
-            "━━━━━━━━━━━━━━━━━━━━━",
-            "⚡ <i>Fast execution! Set SL & Target immediately!</i> 🐂🔥",
+            "<b>Premium Index F&O</b>",
+            f"⚡ <b>BUY {contract_alert_str} ABOVE {setup.entry_est:,.0f}</b>",
+            "",
+            f"🎯 <b>TARGET 1 :-</b> {setup.target_1:,.0f} (+{pts_tgt:,.0f} Points)",
+            f"🎯 <b>TARGET 2 :-</b> {setup.target_2:,.0f} (+{pts_tgt2:,.0f} Points)",
+            f"🛑 <b>SL :-</b> {setup.stop_loss:,.0f} (-{pts_sl:,.0f} Points)",
+            f"📍 <b>Spot SL :-</b> {setup.underlying_price:,.0f} ({spot_desc})",
+            "",
+            f"💼 <b>Sizing:</b> {setup.lots} Lots ({total_qty} Units) | Margin: ₹{margin_est:,.0f}",
+            f"🛡️ <b>Cost Shield:</b> Move SL to ₹{shield_sl:,.0f} once price hits ₹{shield_trigger:,.0f}",
         ]
 
         text = "\n".join(lines)
