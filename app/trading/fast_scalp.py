@@ -558,9 +558,8 @@ class FastScalpEngine:
         ]
 
         text = "\n".join(lines)
-        dispatched = await self._dispatch_to_all_channels(text, idemp)
 
-        # Live Dhan execution at 09:16:00 when LIVE_ORDER_ENABLED=true
+        # 1. LIVE DHAN EXECUTION FIRST (Fastest Exchange Queue Priority)
         if getattr(settings, "live_order_enabled", False) and setup.opt_contract:
             try:
                 from app.trading.order_executor import order_executor
@@ -578,13 +577,15 @@ class FastScalpEngine:
                 async def _exec_0916_scalp():
                     st_cat, ok, res_msg = await order_executor.execute_dhan_order(order_data, lot_multiplier=setup.lots)
                     if ok:
-                        await notifier.send_message(f"🚀 <b>Live 09:16 Scalp Executed on Dhan:</b>\n\n{res_msg}")
+                        await notifier.send_message(f"🚀 <b>Live Order Placed on Dhan:</b>\n\n{res_msg}")
                     else:
-                        await notifier.send_message(f"⚠️ <b>Live 09:16 Scalp Order Alert:</b>\n\n{res_msg}")
+                        await notifier.send_message(f"⚠️ <b>Live Order Alert:</b>\n\n{res_msg}")
                 asyncio.create_task(_exec_0916_scalp())
             except Exception as e:
-                logger.error(f"Error placing live 09:16 scalp order on Dhan: {e}")
+                logger.error(f"Error placing live scalp order on Dhan: {e}")
 
+        # 2. DISPATCH TELEGRAM ALERT IMMEDIATELY
+        dispatched = await self._dispatch_to_all_channels(text, idemp)
         return dispatched
 
     async def broadcast_no_trade_advisory(self, trade_date: Optional[date] = None) -> bool:
