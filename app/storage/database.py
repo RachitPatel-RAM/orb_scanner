@@ -837,6 +837,21 @@ class Database:
         logger.info(f"Compounded Trading Capital: ₹{current:.2f} -> ₹{new_balance:.2f} (PnL: {pnl:+.2f})")
         return new_balance
 
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Retrieves a persistent setting string from settings_kv."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT value FROM settings_kv WHERE key = ?", (key,)).fetchone()
+            return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Saves a persistent setting string into settings_kv."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO settings_kv (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """, (key, str(value)))
+
     def record_scalp_session(
         self,
         trade_date: str,

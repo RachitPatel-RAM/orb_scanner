@@ -652,8 +652,8 @@ class LiveEngine:
 
             failed_attempts = 0
             while self._running:
-                # Renew every 2 hours on success, or retry every 15 minutes if an attempt failed
-                sleep_sec = (2 * 3600) if failed_attempts == 0 else 900
+                # Renew every 2 hours; even on failure, wait 2 hours to prevent Telegram spam
+                sleep_sec = 2 * 3600
                 await asyncio.sleep(sleep_sec)
                 if not self._running:
                     break
@@ -666,7 +666,13 @@ class LiveEngine:
                 else:
                     failed_attempts += 1
                     logger.warning(f"Background token auto-renewal attempt #{failed_attempts} failed: {msg}")
-                    if failed_attempts >= 3 or "Invalid Token" in msg:
+                    import time
+                    now = time.time()
+                    last_alert_str = db.get_setting("last_dhan_renewal_alert", "0")
+                    last_alert_time = float(last_alert_str or "0")
+                    # Throttle failure alert to at most once every 12 hours
+                    if (now - last_alert_time) > (12 * 3600):
+                        db.set_setting("last_dhan_renewal_alert", str(now))
                         await notifier.send_message(
                             f"⚠️ <b>Dhan Token Auto-Renewal Alert</b>\n\n"
                             f"• {msg}\n"
