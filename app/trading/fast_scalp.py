@@ -349,6 +349,37 @@ class FastScalpEngine:
         is_bullish = c_close > c_open and (body / c_range) >= 0.55
         is_bearish = c_close < c_open and (body / c_range) >= 0.55
 
+        # Query pre-market snapshot to evaluate Gap-and-Go & Support Floor rules
+        snap = pre_market_manager.get_snapshot(sym, d)
+        if not snap:
+            try:
+                snap = await pre_market_manager.compute_snapshot(sid, sym, d)
+            except Exception:
+                pass
+        prev_close = snap.prev_close if snap else c_open
+        prev_low = snap.prev_low if snap else c_low
+
+        # 1. GAP-AND-GO RULE:
+        # If open had a significant Gap-Up (>= +0.35%) and Candle 1 low held above prev_close:
+        # Never short with a PUT even if Candle 1 closed red.
+        # Treat the red bar as a healthy gap retest -> Enforce CALL (CE) bias.
+        if prev_close > 0 and (c_open - prev_close) / prev_close >= 0.0035 and c_low >= prev_close:
+            logger.info(f"Gap-and-Go Rule activated for {sym}: Gap up defended. Enforcing Bullish Call bias.")
+            is_bullish = True
+            is_bearish = False
+        elif prev_close > 0 and (prev_close - c_open) / prev_close >= 0.0035 and c_high <= prev_close:
+            # Bear Gap-and-Go: Gap down defended below prev_close -> Enforce Bearish Put bias
+            logger.info(f"Bear Gap-and-Go Rule activated for {sym}: Gap down defended. Enforcing Bearish Put bias.")
+            is_bearish = True
+            is_bullish = False
+
+        # 2. SUPPORT FLOOR RULE:
+        # If Candle 1 dropped > 150 points straight into previous day low/support:
+        # Do not short into the floor!
+        if is_bearish and prev_low > 0 and c_low <= prev_low * 1.001 and (c_open - c_low) >= 150.0:
+            logger.info(f"Support Floor filter: {sym} dropped >150 pts into support {prev_low:.1f}. Skipping blind short.")
+            is_bearish = False
+
         if not (is_bullish or is_bearish):
             return None
 
@@ -743,6 +774,23 @@ class FastScalpEngine:
             "💬 <i>Disciplined small loss! We strictly hunt low-risk, high-reward setups. Stay ready for the next primary setup!</i> 🐂⚡",
         ]
 
+        text = "\n".join(lines)
+        return await self._dispatch_to_all_channels(text, idemp)
+
+    async def notify_level_untriggered(self, setup: FastScalpSetup, reason: str = "Level did not trigger") -> bool:
+        """Dispatches short, clean, emoji-rich notification when a conditional trigger level was not crossed."""
+        setup.status = "CANCELLED"
+        idemp = f"SCALP_UNTRIGGERED_{setup.symbol}_{setup.trade_date.isoformat()}_{setup.setup_source}"
+        lines = [
+            "🛡️ <b>LEVEL NOT TRIGGERED — ₹0 RISK</b> 🔒",
+            "━━━━━━━━━━━━━━━━━━━━━",
+            f"⚡ <b>{setup.contract_symbol}</b>",
+            f"• <b>Trigger Level:</b> Above ₹{setup.entry_est:,.0f} was not reached",
+            f"• <b>Status:</b> Direction not confirmed | Order Cancelled",
+            "• <b>Capital Protected:</b> 100% Safe (₹0.00 Loss)",
+            "",
+            "💎 <i>We strictly trade real momentum confirmation! Capital 100% safe!</i> 🐂🔥",
+        ]
         text = "\n".join(lines)
         return await self._dispatch_to_all_channels(text, idemp)
 
